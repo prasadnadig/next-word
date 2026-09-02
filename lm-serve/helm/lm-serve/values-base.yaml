@@ -1,0 +1,47 @@
+catalog:
+  enabled: true
+  name: lm-serve-model-catalog
+  key: models.yaml
+  storage:
+    bucket: REPLACE_ME_BUCKET
+    endpoint: https://us-ord-1.linodeobjects.com
+    region: us-east-1
+  models: []
+
+validation:
+  rejectEmptyCatalog: true
+
+modelPublisherRbac:
+  enabled: true
+  serviceAccountName: lm-serve-model-publisher
+
+modelPublisherCronjob:
+  enabled: false
+  name: lm-serve-model-publisher
+  schedule: "0 */6 * * *"
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  concurrencyPolicy: Forbid
+  backoffLimit: 2
+  image: REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
+  imagePullPolicy: IfNotPresent
+  serviceAccountName: lm-serve-model-publisher
+  catalogConfigMapName: lm-serve-model-catalog
+  catalogKey: models.yaml
+  s3SecretName: lm-serve-object-storage-creds
+  hfSecretName: lm-serve-hf-credentials
+  pruneStaging: true
+
+modelReconciler:
+  enabled: false
+  name: vllm-catalog-model-reconciler
+  serviceAccountName: vllm-catalog-model-reconciler
+  roleName: vllm-catalog-model-reconciler
+  backoffLimit: 0
+  image: REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
+  imagePullPolicy: IfNotPresent
+  args:
+    catalogConfigMapName: lm-serve-model-catalog
+    catalogKey: models.yaml
+    edgeServiceType: LoadBalancer
+    watchIntervalSec: "60"

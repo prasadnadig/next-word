@@ -1,0 +1,64 @@
+{{- if .Values.modelPublisherCronjob.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Values.modelPublisherCronjob.name }}
+  labels:
+{{ include "lm-serve.labels" . | indent 4 }}
+spec:
+  schedule: {{ .Values.modelPublisherCronjob.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.modelPublisherCronjob.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.modelPublisherCronjob.failedJobsHistoryLimit }}
+  concurrencyPolicy: {{ .Values.modelPublisherCronjob.concurrencyPolicy }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.modelPublisherCronjob.backoffLimit }}
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ .Values.modelPublisherCronjob.serviceAccountName }}
+          containers:
+            - name: model-publisher
+              image: {{ .Values.modelPublisherCronjob.image }}
+              imagePullPolicy: {{ .Values.modelPublisherCronjob.imagePullPolicy }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              args:
+                - --catalog-configmap
+                - {{ .Values.modelPublisherCronjob.catalogConfigMapName }}
+                - --catalog-namespace
+                - {{ .Release.Namespace }}
+                - --catalog-key
+                - {{ .Values.modelPublisherCronjob.catalogKey }}
+                {{- if .Values.modelPublisherCronjob.pruneStaging }}
+                - --prune-staging
+                {{- end }}
+              env:
+                - name: S3_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.modelPublisherCronjob.s3SecretName }}
+                      key: access_key_id
+                - name: S3_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.modelPublisherCronjob.s3SecretName }}
+                      key: secret_access_key
+                - name: HF_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.modelPublisherCronjob.hfSecretName }}
+                      key: HF_TOKEN
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}

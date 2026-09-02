@@ -1,0 +1,102 @@
+# tiny-smoke model catalog profile
+#
+# Purpose:
+# - Enable two ultra-small Hugging Face text-generation fixtures for validating
+#   a new inference service implementation with minimal artifact size.
+#
+# Model selection rationale:
+# - sshleifer/tiny-gpt2:
+#   - Tiny pretrained checkpoint (~2.5 MB), useful for realistic smoke checks:
+#     tokenizer path, deterministic generation, request/response formatting.
+# - akreal/tiny-random-gpt2:
+#   - Extremely small random-weight GPT-2 variant, useful for architecture and
+#     loader/integration checks where semantic quality is irrelevant.
+#
+# Caveats:
+# - random-weight outputs are expected to be low quality or repetitive.
+# - Passing tests with these models does not imply production-grade behavior
+#   for larger models; add a medium model for follow-up validation.
+
+catalog:
+  models:
+    - name: tiny-gpt2-pretrained
+      enabled: true
+      source:
+        type: huggingface
+        repo: sshleifer/tiny-gpt2
+        revision: main
+        authEnv: HF_TOKEN
+      storage:
+        prefix: models/tiny-gpt2-pretrained
+      serving:
+        replicas: 1
+        gpuCount: 1
+        pvcSize: 5Gi
+        port: 8000
+        tensorParallelSize: 1
+        maxModelLen: 256
+        dtype: float16
+        image: vllm/vllm-openai:v0.8.5
+        runtimeClassName: ""
+        priorityClassName: ""
+        serviceAccountName: ""
+        nodeSelector:
+          nvidia.com/gpu.present: "true"
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchExpressions:
+                      - key: lm-serve/model-name
+                        operator: In
+                        values:
+                          - tiny-gpt2-pretrained
+        extraArgs: []
+
+    - name: tiny-random-gpt2
+      enabled: true
+      source:
+        type: huggingface
+        repo: akreal/tiny-random-gpt2
+        revision: main
+        authEnv: HF_TOKEN
+      storage:
+        prefix: models/tiny-random-gpt2
+      serving:
+        replicas: 1
+        gpuCount: 1
+        pvcSize: 5Gi
+        port: 8000
+        tensorParallelSize: 1
+        maxModelLen: 256
+        dtype: float16
+        image: vllm/vllm-openai:v0.8.5
+        runtimeClassName: ""
+        priorityClassName: ""
+        serviceAccountName: ""
+        nodeSelector:
+          nvidia.com/gpu.present: "true"
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchExpressions:
+                      - key: lm-serve/model-name
+                        operator: In
+                        values:
+                          - tiny-random-gpt2
+        extraArgs: []

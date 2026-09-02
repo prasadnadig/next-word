@@ -1,0 +1,16 @@
+catalog:
+  storage:
+    bucket: my-sample-env-llm-model-bucket
+    endpoint: https://us-ord-1.linodeobjects.com
+    region: us-east-1
+
+modelPublisherCronjob:
+  enabled: true
+  image: registry.example.com/lm-serve-model-publisher:0.1.0
+
+modelReconciler:
+  enabled: true
+  image: registry.example.com/vllm-catalog-deployer:0.1.0
+  args:
+    edgeServiceType: LoadBalancer
+    watchIntervalSec: "60"

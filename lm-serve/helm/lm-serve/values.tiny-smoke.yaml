@@ -1,0 +1,39 @@
+# tiny-smoke environment profile
+#
+# Purpose:
+# - Provide a very low-footprint environment profile for smoke-testing a new
+#   inference service where minimal model size matters more than output quality.
+#
+# Why this fits:
+# - Paired with values.tiny-smoke.models.yaml, this profile enables two of the
+#   smallest practical Hugging Face GPT-2 checkpoints:
+#   1) sshleifer/tiny-gpt2      (~2.5 MB checkpoint, pretrained)
+#   2) akreal/tiny-random-gpt2  (~2.8M parameters, random weights)
+# - These are ideal to validate wiring: model fetch, startup, tokenization,
+#   generation API path, batching/streaming plumbing, and response formatting.
+#
+# Caveats:
+# - tiny-random-gpt2 is intentionally low quality (random weights); output is
+#   often nonsensical or repetitive. Use it to test robustness, not quality.
+# - Very small models can hide latency/memory issues that appear with realistic
+#   checkpoints. Add a medium-size model later for representative performance.
+# - Keeping modelPublisherCronjob/modelReconciler enabled is convenient for an
+#   automated smoke lane, but disable either if you only want manual operations.
+
+catalog:
+  storage:
+    # Replace with a dedicated object storage bucket for this smoke environment.
+    bucket: my-tiny-smoke-llm-model-bucket
+    endpoint: https://us-ord-1.linodeobjects.com
+    region: us-east-1
+
+modelPublisherCronjob:
+  enabled: true
+  image: registry.example.com/lm-serve-model-publisher:0.1.0
+
+modelReconciler:
+  enabled: true
+  image: registry.example.com/vllm-catalog-deployer:0.1.0
+  args:
+    edgeServiceType: LoadBalancer
+    watchIntervalSec: "60"

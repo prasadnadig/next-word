@@ -1,0 +1,103 @@
+# small-representative model catalog profile
+#
+# Purpose:
+# - Provide small but realistic text-generation models from recognized model
+#   providers for inference-service validation.
+#
+# Model selection rationale:
+# - HuggingFaceTB/SmolLM2-135M-Instruct:
+#   - ~135M parameter instruction-tuned model from Hugging Face.
+#   - Apache-2.0 license and good lightweight default for endpoint smoke tests.
+# - google/gemma-3-270m-it:
+#   - ~270M parameter instruction-tuned model from Google DeepMind.
+#   - Useful second fixture with different tokenizer/model behavior.
+#
+# Caveats:
+# - gemma-3-270m-it is gated; ensure HF_TOKEN has access and terms acceptance.
+# - These models are more representative than tiny-gpt2/random-gpt2 but still
+#   small relative to many production models.
+# - Consider a third, larger model profile for throughput and memory realism.
+
+catalog:
+  models:
+    - name: smollm2-135m-instruct
+      enabled: true
+      source:
+        type: huggingface
+        repo: HuggingFaceTB/SmolLM2-135M-Instruct
+        revision: main
+        authEnv: HF_TOKEN
+      storage:
+        prefix: models/smollm2-135m-instruct
+      serving:
+        replicas: 1
+        gpuCount: 1
+        pvcSize: 12Gi
+        port: 8000
+        tensorParallelSize: 1
+        maxModelLen: 2048
+        dtype: float16
+        image: vllm/vllm-openai:v0.8.5
+        runtimeClassName: ""
+        priorityClassName: ""
+        serviceAccountName: ""
+        nodeSelector:
+          nvidia.com/gpu.present: "true"
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchExpressions:
+                      - key: lm-serve/model-name
+                        operator: In
+                        values:
+                          - smollm2-135m-instruct
+        extraArgs: []
+
+    - name: gemma-3-270m-it
+      enabled: true
+      source:
+        type: huggingface
+        repo: google/gemma-3-270m-it
+        revision: main
+        authEnv: HF_TOKEN
+      storage:
+        prefix: models/gemma-3-270m-it
+      serving:
+        replicas: 1
+        gpuCount: 1
+        pvcSize: 16Gi
+        port: 8000
+        tensorParallelSize: 1
+        maxModelLen: 2048
+        dtype: float16
+        image: vllm/vllm-openai:v0.8.5
+        runtimeClassName: ""
+        priorityClassName: ""
+        serviceAccountName: ""
+        nodeSelector:
+          nvidia.com/gpu.present: "true"
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchExpressions:
+                      - key: lm-serve/model-name
+                        operator: In
+                        values:
+                          - gemma-3-270m-it
+        extraArgs: []
