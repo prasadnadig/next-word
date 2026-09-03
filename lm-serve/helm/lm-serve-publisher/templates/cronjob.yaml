@@ -1,0 +1,81 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Values.publisher.name }}
+  labels:
+{{ include "lm-serve-publisher.labels" . | indent 4 }}
+spec:
+  schedule: {{ .Values.publisher.schedule | quote }}
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ .Values.publisher.serviceAccountName }}
+          containers:
+            - name: model-publisher
+              image: "{{ .Values.publisher.image }}"
+              imagePullPolicy: {{ .Values.publisher.imagePullPolicy }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              args:
+                - --catalog-namespace
+                - {{ .Values.consumer.catalogNamespace }}
+                - --catalog-key
+                - {{ .Values.publisher.catalogKey }}
+                - --shared-artifacts-prefix
+                - {{ .Values.publisher.sharedArtifactsPrefix | quote }}
+                {{- if .Values.publisher.pruneStaging }}
+                - --prune-staging
+                {{- end }}
+                {{- $enabledCatalogs := list }}
+                {{- range .Values.consumer.catalogs }}
+                {{- if (default true .enabled) }}
+                {{- $enabledCatalogs = append $enabledCatalogs . }}
+                {{- end }}
+                {{- end }}
+                {{- if not $enabledCatalogs }}
+                - --catalog-configmap
+                - {{ .Values.publisher.catalogConfigMapName }}
+                - --catalog-env
+                - default
+                {{- else }}
+                {{- range $enabledCatalogs }}
+                - --catalog-configmap
+                - {{ .configMapName }}
+                - --catalog-env
+                - {{ .env | quote }}
+                {{- end }}
+                {{- end }}
+              env:
+                - name: S3_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.publisher.credentials.s3SecretName }}
+                      key: access_key_id
+                - name: S3_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.publisher.credentials.s3SecretName }}
+                      key: secret_access_key
+                - name: HF_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.publisher.credentials.hfSecretName }}
+                      key: HF_TOKEN
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: tmp
+              emptyDir: {}

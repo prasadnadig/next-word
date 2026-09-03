@@ -1,0 +1,25 @@
+{{- range .Values.consumer.catalogs }}
+{{- if (default true .enabled) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .configMapName }}
+  namespace: {{ $.Values.consumer.catalogNamespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Values.publisher.name }}
+    app.kubernetes.io/component: catalog
+    app.kubernetes.io/part-of: lm-serve
+data:
+  {{ $.Values.publisher.catalogKey }}: |
+    storage:
+      bucket: {{ $.Values.publisher.storage.bucket }}
+      endpoint: {{ $.Values.publisher.storage.endpoint }}
+      region: {{ $.Values.publisher.storage.region }}
+
+{{- $catalogText := $.Files.Get (printf "catalogs/%s" .file) }}
+{{- $catalogBody := regexReplaceAll "(?ms)^storage:\\n(?:[ \\t]+.*\\n?)*" $catalogText "" }}
+{{- $catalogBody = trim $catalogBody }}
+{{ $catalogBody | nindent 4 }}
+{{- end }}
+{{- end }}

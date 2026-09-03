@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lm-serve-auth
+description: Helm chart for the lm-serve auth service and secret wiring
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,46 @@
+publisher:
+  enabled: true
+  name: lm-serve-model-publisher
+  image: REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
+  imagePullPolicy: IfNotPresent
+  schedule: "0 */6 * * *"
+  serviceAccountName: lm-serve-model-publisher
+  catalogKey: models.yaml
+  pruneStaging: true
+  sharedArtifactsPrefix: _shared
+  storage:
+    bucket: my-shared-llm-model-bucket
+    endpoint: https://us-ord-1.linodeobjects.com
+    region: us-east-1
+  credentials:
+    s3SecretName: lm-publisher-object-storage-creds
+    hfSecretName: lm-publisher-hf-credentials
+
+consumer:
+  enabled: true
+  catalogNamespace: lm-serve
+  # Safe default placeholder used until a real credential value is supplied for a consumer catalog secret.
+  # This should stay harmless and never grant privileged access.
+  placeholderSecretValue: unknown
+  catalogs:
+    - env: sample-env
+      enabled: true
+      file: sample-env.yaml
+      configMapName: lm-serve-model-catalog-sample-env
+      namespace: lm-serve
+      serviceAccountName: vllm-catalog-model-reconciler
+      secretName: lm-serve-sample-env-catalog-credentials
+    - env: small-representative
+      enabled: true
+      file: small-representative.yaml
+      configMapName: lm-serve-model-catalog-small-representative
+      namespace: lm-serve-small-representative
+      serviceAccountName: vllm-catalog-model-reconciler
+      secretName: lm-serve-small-representative-catalog-credentials
+    - env: tiny-smoke
+      enabled: true
+      file: tiny-smoke.yaml
+      configMapName: lm-serve-model-catalog-tiny-smoke
+      namespace: lm-serve-tiny-smoke
+      serviceAccountName: vllm-catalog-model-reconciler
+      secretName: lm-serve-tiny-smoke-catalog-credentials

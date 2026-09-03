@@ -4,20 +4,33 @@ SHELL := /bin/bash
 NAMESPACE ?= lm-serve
 CATALOG_CONFIGMAP ?= lm-serve-model-catalog
 CATALOG_KEY ?= models.yaml
-EDGE_SERVICE_TYPE ?= LoadBalancer
+MODEL_SERVICE_TYPE ?= LoadBalancer
+AUTH_NAMESPACE ?= $(if $(ENV),$(ENV),$(NAMESPACE))
 
 # Configure optional image overrides for in-cluster model reconciliation and publishing.
+AUTH_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-auth-service:0.1.0
 MODEL_RECONCILER_IMAGE ?= REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 PUBLISHER_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
 
 # Configure Helm chart wiring and layered values model.
-HELM_RELEASE ?= lm-serve
-HELM_CHART ?= helm/lm-serve
-HELM_BASE_VALUES ?= $(HELM_CHART)/values-base.yaml
+AUTH_HELM_RELEASE ?= lm-serve-auth
+AUTH_HELM_CHART ?= helm/lm-serve-auth
+AUTH_HELM_VALUES ?= -f $(AUTH_HELM_CHART)/values.yaml -f $(AUTH_HELM_CHART)/values.$(ENV).yaml
+
+PLATFORM_HELM_RELEASE ?= lm-serve-platform
+PLATFORM_HELM_CHART ?= helm/lm-serve-platform
+PLATFORM_HELM_VALUES ?= -f $(PLATFORM_HELM_CHART)/values.yaml
+
+MODELS_HELM_RELEASE ?= lm-serve-models
+MODELS_HELM_CHART ?= helm/lm-serve-models
+MODELS_HELM_VALUES ?= -f $(MODELS_HELM_CHART)/values.yaml -f $(MODELS_HELM_CHART)/values.$(ENV).yaml
+
+PUBLISHER_HELM_RELEASE ?= lm-serve-publisher
+PUBLISHER_HELM_CHART ?= helm/lm-serve-publisher
+PUBLISHER_HELM_VALUES ?= -f $(PUBLISHER_HELM_CHART)/values.yaml
+
 ENV ?=
 HELM_EXTRA_ARGS ?=
-HELM_VALUES ?= -f $(HELM_BASE_VALUES) -f $(HELM_CHART)/values.$(ENV).yaml -f $(HELM_CHART)/values.$(ENV).models.yaml
-HELM_UPGRADE_INSTALL ?= helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) -n $(NAMESPACE) --create-namespace $(HELM_VALUES) $(HELM_EXTRA_ARGS)
 
 # Configure auth and smoke-test inputs.
 API_KEY ?=
@@ -28,16 +41,15 @@ PROMPT ?= Reply with exactly the word OK.
 help:
 	@echo "LM Serve Make Targets"
 	@echo ""
-	@echo "Happy-path flow (bootstrap -> reconcile -> validate):"
-	@echo "  make render-helm-template ENV=<env>"
-	@echo "    done: render manifests for ConfigMaps, Services, Deployments, StatefulSets, Jobs/CronJobs, and Secret references"
-	@echo "    done+: validate layered values before applying resources to the cluster"
-	@echo "  make helm-upgrade-base ENV=<env>"
-	@echo "    done: apply base LM Serve chart resources for catalog + serving edge; disable optional publisher/reconciler controllers"
-	@echo "  make apply-base ENV=<env>"
-	@echo "    done: run [helm-upgrade-base] and apply namespace-scoped example Secrets required by auth/object-storage workflows"
+	@echo "Primary flow (install split charts -> reconcile -> validate):"
+	@echo "  make render-helm-template ENV=sample-env"
+	@echo "    done: render auth, platform, models, and publisher charts with their chart-local defaults"
+	@echo "    done+: validate the split chart surfaces before installing them"
+	@echo "  make apply-base ENV=sample-env"
+	@echo "    done: install auth, platform, and models charts; disable the model reconciler Job for the base install"
+	@echo "    done+: apply namespace-scoped example Secrets required by auth/object-storage workflows"
 	@echo "  make deploy-once"
-	@echo "    done: reconcile catalog once; create/update model StatefulSets, related Services, and shared serving edge components"
+	@echo "    done: reconcile catalog once; create/update model StatefulSets, related Services, and route data"
 	@echo "  make generate-auth-materials"
 	@echo "    done: generate bootstrap API key/JWT materials for small-team validation"
 	@echo "  make smoke-test-api-key API_KEY=<k>"
@@ -48,7 +60,7 @@ help:
 	@echo "    done: validate all configured auth paths and baseline inference for all enabled models"
 	@echo "  make happy-path ..."
 	@echo "    done: run [apply-base] -> [deploy-once] -> [smoke-test-api-key|smoke-test-jwt|smoke-test-all]"
-	@echo "    done+: produces a validated baseline LM Serve deployment from chart + catalog + auth test"
+	@echo "    done+: produces a validated baseline LM Serve deployment from split charts + catalog + auth test"
 	@echo ""
 	@echo "Continuous reconciliation and automation options:"
 	@echo "  make deploy-watch-local"
@@ -57,16 +69,20 @@ help:
 	@echo "    done: build model deployment reconciler container image"
 	@echo "  make push-model-reconciler-image"
 	@echo "    done: push model deployment reconciler image to the specified container registry"
+	@echo "  make build-auth-image"
+	@echo "    done: build auth service image from tracked source"
+	@echo "  make push-auth-image"
+	@echo "    done: push auth service image to the specified container registry"
+	@echo "  make apply-auth-service"
+	@echo "    done: deploy or update auth chart with the selected auth image"
 	@echo "  make apply-model-reconciler ENV=<env> MODEL_RECONCILER_IMAGE=<img>"
 	@echo "    done: enable in-cluster model reconciliation and configure the reconciler image used by the Job"
 	@echo "  make build-model-publisher-image"
 	@echo "    done: build model catalog publisher image"
 	@echo "  make push-model-publisher-image"
 	@echo "    done: push model catalog publisher image to the specified container registry"
-	@echo "  make apply-model-publisher-rbac ENV=<env>"
-	@echo "    done: enable RBAC resources required for model catalog publishing automation"
-	@echo "  make apply-model-publisher-cronjob ENV=<env> PUBLISHER_IMAGE=<img>"
-	@echo "    done: enable scheduled model publishing CronJob and configure its runtime image"
+	@echo "  make apply-model-publisher PUBLISHER_IMAGE=<img>"
+	@echo "    done: install the publisher chart in its dedicated namespace; ENV is not required because the catalog registry is defined in values.yaml"
 	@echo ""
 	@echo "Diagnostics and prerequisites:"
 	@echo "  make check-tools"
@@ -79,12 +95,20 @@ help:
 	@echo "Override variables (set as make VAR=value):"
 	@echo "  NAMESPACE=$(NAMESPACE) CATALOG_CONFIGMAP=$(CATALOG_CONFIGMAP) CATALOG_KEY=$(CATALOG_KEY)"
 	@echo "    done: select Kubernetes namespace and model catalog location"
-	@echo "  MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE)"
-	@echo "    done: set runtime images for model reconciliation and model publishing automation"
+	@echo "  AUTH_NAMESPACE=$(AUTH_NAMESPACE)"
+	@echo "    done: select where auth chart is deployed; default follows ENV, override for shared auth"
+	@echo "  AUTH_IMAGE=$(AUTH_IMAGE) MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE)"
+	@echo "    done: set runtime images for auth service, model reconciliation, and model publishing automation"
 	@echo "  ENV=<env-name> (required for Helm targets; example: ENV=sample-env)"
-	@echo "    done: select values.<env>.yaml and values.<env>.models.yaml"
-	@echo "  HELM_RELEASE=$(HELM_RELEASE) HELM_CHART=$(HELM_CHART) HELM_BASE_VALUES=$(HELM_BASE_VALUES) HELM_EXTRA_ARGS='$(HELM_EXTRA_ARGS)'"
-	@echo "    done: override Helm release/chart/base values and pass extra Helm flags"
+	@echo "    done: select values.<env>.yaml for the consumer-side model chart and the publisher catalog for that env"
+	@echo "  AUTH_HELM_RELEASE=$(AUTH_HELM_RELEASE) PLATFORM_HELM_RELEASE=$(PLATFORM_HELM_RELEASE) MODELS_HELM_RELEASE=$(MODELS_HELM_RELEASE) PUBLISHER_HELM_RELEASE=$(PUBLISHER_HELM_RELEASE)"
+	@echo "    done: override chart release names"
+	@echo "  AUTH_HELM_CHART=$(AUTH_HELM_CHART) PLATFORM_HELM_CHART=$(PLATFORM_HELM_CHART) MODELS_HELM_CHART=$(MODELS_HELM_CHART) PUBLISHER_HELM_CHART=$(PUBLISHER_HELM_CHART)"
+	@echo "    done: override chart locations"
+	@echo "  ENV=<env-name> (required for models chart values; example: ENV=sample-env)"
+	@echo "    done: select values.<env>.yaml for the model consumer chart; source catalog intent lives under helm/lm-serve-publisher/catalogs/<env>.yaml"
+	@echo "  HELM_EXTRA_ARGS='$(HELM_EXTRA_ARGS)'"
+	@echo "    done: pass extra Helm flags to chart install/render commands"
 
 # Validate required local CLI tools.
 .PHONY: check-tools
@@ -113,33 +137,40 @@ check-helm:
 .PHONY: require-env
 require-env:
 	@if [[ -z "$(ENV)" ]]; then echo "Set ENV=<env-name> (example: ENV=sample-env)"; exit 1; fi
-	@test -f "$(HELM_BASE_VALUES)" || (echo "Missing $(HELM_BASE_VALUES)" && exit 1)
-	@test -f "$(HELM_CHART)/values.$(ENV).yaml" || (echo "Missing $(HELM_CHART)/values.$(ENV).yaml" && exit 1)
-	@test -f "$(HELM_CHART)/values.$(ENV).models.yaml" || (echo "Missing $(HELM_CHART)/values.$(ENV).models.yaml" && exit 1)
+	@test -f "$(MODELS_HELM_CHART)/values.yaml" || (echo "Missing $(MODELS_HELM_CHART)/values.yaml" && exit 1)
+	@test -f "$(MODELS_HELM_CHART)/values.$(ENV).yaml" || (echo "Missing $(MODELS_HELM_CHART)/values.$(ENV).yaml" && exit 1)
+	@test -f "$(PUBLISHER_HELM_CHART)/catalogs/$(ENV).yaml" || (echo "Missing $(PUBLISHER_HELM_CHART)/catalogs/$(ENV).yaml; source catalog intent lives under the publisher chart" && exit 1)
+	@test -f "$(AUTH_HELM_CHART)/values.$(ENV).yaml" || (echo "Missing $(AUTH_HELM_CHART)/values.$(ENV).yaml" && exit 1)
 
 # Step 1: Bootstrap base chart resources and namespace secrets.
 .PHONY: render-helm-template
 render-helm-template: check-helm require-env
-	helm template $(HELM_RELEASE) $(HELM_CHART) -n $(NAMESPACE) $(HELM_VALUES) $(HELM_EXTRA_ARGS)
+	helm template $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
+	helm template $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) $(PLATFORM_HELM_VALUES) --set authz.endpoint.namespace=$(AUTH_NAMESPACE) $(HELM_EXTRA_ARGS)
+	helm template $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) $(MODELS_HELM_VALUES) $(HELM_EXTRA_ARGS)
+	helm template $(PUBLISHER_HELM_RELEASE) $(PUBLISHER_HELM_CHART) -n $(NAMESPACE) $(PUBLISHER_HELM_VALUES) $(HELM_EXTRA_ARGS)
 
 .PHONY: helm-upgrade-base
 helm-upgrade-base: check-helm check-kubectl require-env
-	$(HELM_UPGRADE_INSTALL) \
-	  --set modelPublisherCronjob.enabled=false \
-	  --set modelReconciler.enabled=false
+	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
+	helm upgrade --install $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PLATFORM_HELM_VALUES) --set authz.endpoint.namespace=$(AUTH_NAMESPACE) $(HELM_EXTRA_ARGS)
+	helm upgrade --install $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) --create-namespace $(MODELS_HELM_VALUES) --set modelReconciler.enabled=false $(HELM_EXTRA_ARGS)
 
 .PHONY: apply-base
 apply-base: helm-upgrade-base
 	kubectl -n $(NAMESPACE) apply -f manifests/secrets.examples.yaml
+	@if [[ "$(AUTH_NAMESPACE)" != "$(NAMESPACE)" ]]; then \
+		kubectl -n $(AUTH_NAMESPACE) apply -f manifests/secrets.examples.yaml; \
+	fi
 
-# Step 2: Reconcile model catalog into running model workloads and edge components.
+# Step 2: Reconcile model catalog into running model workloads and services.
 .PHONY: deploy-once
 deploy-once: check-kubectl check-yq
 	bash deploy/deploy_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
 	  --catalog-configmap $(CATALOG_CONFIGMAP) \
 	  --catalog-key $(CATALOG_KEY) \
-	  --edge-service-type $(EDGE_SERVICE_TYPE)
+	  --model-service-type $(MODEL_SERVICE_TYPE)
 
 .PHONY: deploy-watch-local
 deploy-watch-local: check-kubectl check-yq
@@ -147,7 +178,7 @@ deploy-watch-local: check-kubectl check-yq
 	  --namespace $(NAMESPACE) \
 	  --catalog-configmap $(CATALOG_CONFIGMAP) \
 	  --catalog-key $(CATALOG_KEY) \
-	  --edge-service-type $(EDGE_SERVICE_TYPE) \
+	  --model-service-type $(MODEL_SERVICE_TYPE) \
 	  --watch-interval-sec 60
 
 # Step 3: Generate test credentials and validate serving with smoke tests.
@@ -210,6 +241,19 @@ happy-path:
 	@echo "      What next: use deploy-watch-local or apply-model-reconciler for continuous model reconciliation."
 
 # Optional extension: Automate in-cluster model reconciliation.
+.PHONY: build-auth-image
+build-auth-image: check-docker
+	docker build -t $(AUTH_IMAGE) auth-service
+
+.PHONY: push-auth-image
+push-auth-image: check-docker
+	docker push $(AUTH_IMAGE)
+
+.PHONY: apply-auth-service
+apply-auth-service: check-helm check-kubectl
+	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
+
+# Optional extension: Automate in-cluster model reconciliation.
 .PHONY: build-model-reconciler-image
 build-model-reconciler-image: check-docker
 	docker build -t $(MODEL_RECONCILER_IMAGE) deploy
@@ -220,9 +264,9 @@ push-model-reconciler-image: check-docker
 
 .PHONY: apply-model-reconciler
 apply-model-reconciler: check-helm check-kubectl require-env
-	$(HELM_UPGRADE_INSTALL) \
+	helm upgrade --install $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) --create-namespace $(MODELS_HELM_VALUES) \
 	  --set modelReconciler.enabled=true \
-	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE)
+	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE) $(HELM_EXTRA_ARGS)
 
 # Optional extension: Automate model publishing.
 .PHONY: build-model-publisher-image
@@ -233,13 +277,8 @@ build-model-publisher-image: check-docker
 push-model-publisher-image: check-docker
 	docker push $(PUBLISHER_IMAGE)
 
-.PHONY: apply-model-publisher-rbac
-apply-model-publisher-rbac: check-helm check-kubectl require-env
-	$(HELM_UPGRADE_INSTALL) \
-	  --set modelPublisherRbac.enabled=true
-
-.PHONY: apply-model-publisher-cronjob
-apply-model-publisher-cronjob: check-helm check-kubectl require-env
-	$(HELM_UPGRADE_INSTALL) \
-	  --set modelPublisherCronjob.enabled=true \
-	  --set-string modelPublisherCronjob.image=$(PUBLISHER_IMAGE)
+.PHONY: apply-model-publisher
+apply-model-publisher: check-helm check-kubectl
+	helm upgrade --install $(PUBLISHER_HELM_RELEASE) $(PUBLISHER_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PUBLISHER_HELM_VALUES) \
+	  --set publisher.enabled=true --set consumer.enabled=true \
+	  --set-string publisher.image=$(PUBLISHER_IMAGE) $(HELM_EXTRA_ARGS)

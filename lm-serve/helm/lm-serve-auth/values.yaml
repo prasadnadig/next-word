@@ -1,0 +1,25 @@
+authService:
+  enabled: true
+  name: lm-serve-auth-service
+  image: REPLACE_ME_REGISTRY/lm-serve-auth-service:0.1.0
+  imagePullPolicy: IfNotPresent
+  secretReloadIntervalSec: 5
+  replicaCount: 2
+  service:
+    port: 8080
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+secrets:
+  mode: existingSecret
+  existingSecretName: lm-serve-auth-secrets
+  keys:
+    apiKeys: api_keys.txt
+    jwtSecret: jwt_hs256_secret
+  externalRef:
+    enabled: false

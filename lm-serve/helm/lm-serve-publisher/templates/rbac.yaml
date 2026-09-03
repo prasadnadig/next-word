@@ -1,0 +1,89 @@
+{{- $catalogNames := list }}
+{{- range .Values.consumer.catalogs }}
+{{- if (default true .enabled) }}
+{{- $catalogNames = append $catalogNames .configMapName }}
+{{- end }}
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.publisher.serviceAccountName }}
+  labels:
+{{ include "lm-serve-publisher.labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+{{- range $catalogNames }}
+      - {{ . | quote }}
+{{- end }}
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - {{ .Values.publisher.credentials.s3SecretName | quote }}
+      - {{ .Values.publisher.credentials.hfSecretName | quote }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.publisher.serviceAccountName }}
+  labels:
+{{ include "lm-serve-publisher.labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.publisher.serviceAccountName }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.publisher.serviceAccountName }}
+{{- range .Values.consumer.catalogs }}
+{{- if (default true .enabled) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .secretName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Values.publisher.name }}
+    app.kubernetes.io/component: catalog-access
+    app.kubernetes.io/part-of: lm-serve
+    app.kubernetes.io/env: {{ .env }}
+type: Opaque
+stringData:
+  value: {{ $.Values.consumer.placeholderSecretValue | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $.Values.publisher.serviceAccountName }}-{{ .env }}-secret-read
+  namespace: {{ $.Release.Namespace }}
+  labels:
+{{ include "lm-serve-publisher.labels" $ | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - {{ .secretName | quote }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $.Values.publisher.serviceAccountName }}-{{ .env }}-secret-read
+  namespace: {{ $.Release.Namespace }}
+  labels:
+{{ include "lm-serve-publisher.labels" $ | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .serviceAccountName }}
+    namespace: {{ .namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $.Values.publisher.serviceAccountName }}-{{ .env }}-secret-read
+{{- end }}
+{{- end }}

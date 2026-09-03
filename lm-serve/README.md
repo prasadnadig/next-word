@@ -7,11 +7,20 @@ This directory provides a clean, modular baseline for model publication and vLLM
 - `Makefile`
   - Convenience targets for build, deploy, model reconciliation, and smoke testing.
 
-- `helm/lm-serve/`
-  - Helm chart for templated customization of catalog, model publisher, and model reconciler resources.
-  - `values-base.yaml`: Shared base values used for every environment.
-  - `values.sample-env.yaml`: Example override values for an environment profile named `sample-env`.
-  - `values.sample-env.models.yaml`: Example model list override values for `sample-env`.
+- `helm/lm-serve-auth/`
+  - Dedicated auth service chart for runtime, service, and secret wiring.
+
+- `auth-service/`
+  - Tracked Python auth service source, dependencies, and Dockerfile for production image delivery.
+
+- `helm/lm-serve-platform/`
+  - Dedicated Envoy platform chart for edge rollout and auth wiring.
+
+- `helm/lm-serve-models/`
+  - Dedicated model-runtime chart that consumes the published catalog and owns rollout plus route-data generation.
+
+- `helm/lm-serve-publisher/`
+  - Dedicated model publisher chart that owns the source model catalogs, publication CronJob, RBAC, and publishing runtime.
 
 - `deploy/`
   - `deploy_lm_serve_catalog.sh`: Model deployment reconciler that reconciles catalog entries into one StatefulSet per model plus shared Envoy edge.
@@ -27,6 +36,9 @@ This directory provides a clean, modular baseline for model publication and vLLM
   - `requirements.txt`: Script dependencies.
   - `README.md`: Build, deploy, and cron operation guide.
 
+- `helm/lm-serve/`
+  - Legacy shared environment overlays and decomposition notes used during the chart split.
+
 - `manifests/`
   - `secrets.examples.yaml`: Example Secrets for object storage, auth, and Hugging Face token.
   - `model-catalog.configmap.yaml`: Local catalog reference for non-cluster publisher runs.
@@ -41,15 +53,24 @@ The implementation is intentionally cloud-neutral at the data layer:
 
 To move from Linode to another cloud, update storage endpoint, credentials, and any cluster-specific labels/storage classes.
 
+## Architecture proposal: split charts
+
+For independent versioning and release of auth, platform software, and model rollout, see:
+
+- `helm/lm-serve/chart-decomposition-proposal.md`
+
 ## Environment values model
 
-Each environment should use exactly three values files:
+The consumer-side model chart uses environment overlays only:
 
-1. `values-base.yaml`: shared chart defaults, naming, and validation behavior.
-2. `values.<env>.yaml`: environment-specific storage endpoints, bucket names, and feature toggles.
-3. `values.<env>.models.yaml`: model list and per-model serving configuration.
+1. `helm/lm-serve-models/values.yaml`: shared chart defaults, naming, and validation behavior.
+2. `helm/lm-serve-models/values.<env>.yaml`: environment-specific storage endpoints, bucket names, and feature toggles.
 
-To add a new environment, copy both `sample-env` files and rename them to your environment name.
+The source-of-truth catalog definitions live under the publisher chart instead:
+
+- `helm/lm-serve-publisher/catalogs/<env>.yaml`
+
+To add a new environment, copy the publisher catalog and the model runtime override file, then rename them to your environment name.
 
 ## Quick start with Make targets
 
@@ -71,14 +92,14 @@ make render-helm-template ENV=sample-env
 Apply chart with an override file:
 
 ```bash
-make helm-upgrade-base ENV=sample-env
+make apply-base ENV=sample-env
 ```
 
 Override individual values from CLI:
 
 ```bash
 make apply-model-reconciler MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make apply-model-publisher-cronjob PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
+make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 ```
 
 For continuous in-cluster model reconciliation and periodic model publishing, build/push images and apply manifests:
@@ -90,12 +111,23 @@ make apply-model-reconciler ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vll
 
 make build-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 make push-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
-make apply-model-publisher-rbac ENV=sample-env
-make apply-model-publisher-cronjob ENV=sample-env PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
+make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 ```
+
+Publisher install note:
+
+- The publisher chart is installed in its own dedicated namespace, typically `lm-publisher`.
+- `ENV` is not required for `make apply-model-publisher` because the canonical publisher catalog registry already lives in `helm/lm-serve-publisher/values.yaml` and the env-specific catalog files are selected there.
+- `ENV` remains necessary for consumer-side chart installs such as `apply-base` and `apply-model-reconciler`.
+
+Auth namespace behavior:
+
+- Default: `AUTH_NAMESPACE` follows `ENV`.
+- Override: set `AUTH_NAMESPACE=<namespace>` to use a shared auth deployment across multiple environments.
+- If `AUTH_NAMESPACE` differs from `NAMESPACE`, `make apply-base` applies example secrets to both namespaces.
 
 To pass additional Helm options (for example, extra `-f` files or `--set` flags), use `HELM_EXTRA_ARGS`.
 
-Note: Helm-related Make targets require `ENV=<name>` and automatically layer `values-base.yaml`, `values.<env>.yaml`, and `values.<env>.models.yaml`.
+Note: Helm-related Make targets require `ENV=<name>` and automatically layer `helm/lm-serve-models/values.yaml` and `helm/lm-serve-models/values.<env>.yaml`. The source catalog metadata for that environment is expected under `helm/lm-serve-publisher/catalogs/<env>.yaml`.
 
-Model publisher and model reconciler deployment are supported only through Helm templates under `helm/lm-serve/templates/`.
+Model publisher and model reconciler deployment are supported through the dedicated `helm/lm-serve-publisher/` and `helm/lm-serve-models/` charts.

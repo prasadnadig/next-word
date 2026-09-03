@@ -46,38 +46,33 @@ make push-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publis
 
 ## Run in Kubernetes CronJob
 
+The publisher supports per-catalog enablement via `consumer.catalogs[*].enabled`. Any entry with `enabled: false` is skipped by the Helm render and by the Python publisher job.
+
 1. Push image to your registry.
-2. Update image value in `../helm/lm-serve/values-base.yaml` or pass `PUBLISHER_IMAGE` to the Make target.
+2. Update image value in `../helm/lm-serve-publisher/values.yaml` or pass `PUBLISHER_IMAGE` to the Make target.
 3. Ensure required Secrets exist in the target namespace.
-4. Apply RBAC and ServiceAccount:
+4. Install the publisher chart in a dedicated namespace such as `lm-publisher`:
 
 ```bash
-helm upgrade --install lm-serve ../helm/lm-serve -n lm-serve --create-namespace \
-	-f ../helm/lm-serve/values-base.yaml \
-	-f ../helm/lm-serve/values.sample-env.yaml \
-	-f ../helm/lm-serve/values.sample-env.models.yaml \
-	--set modelPublisherRbac.enabled=true
+helm upgrade --install lm-serve-publisher ../helm/lm-serve-publisher -n lm-publisher --create-namespace \
+	-f ../helm/lm-serve-publisher/values.yaml
 ```
 
-5. Apply CronJob:
+5. Deploy the publisher image and schedule the CronJob:
 
 ```bash
-helm upgrade --install lm-serve ../helm/lm-serve -n lm-serve \
-	-f ../helm/lm-serve/values-base.yaml \
-	-f ../helm/lm-serve/values.sample-env.yaml \
-	-f ../helm/lm-serve/values.sample-env.models.yaml \
-	--set modelPublisherCronjob.enabled=true \
-	--set-string modelPublisherCronjob.image=REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
+helm upgrade --install lm-serve-publisher ../helm/lm-serve-publisher -n lm-publisher \
+	-f ../helm/lm-serve-publisher/values.yaml \
+	--set-string publisher.image=REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
 ```
 
 Make-based variant:
 
 ```bash
-make apply-model-publisher-rbac ENV=sample-env
-make apply-model-publisher-cronjob ENV=sample-env PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
+make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 ```
 
-Model publisher deployment is supported only through Helm templates under `../helm/lm-serve/templates/`.
+`ENV` is not required for the publisher install itself because the publisher chart owns the canonical registry in `../helm/lm-serve-publisher/values.yaml`. Model publisher deployment is supported only through the dedicated `../helm/lm-serve-publisher/` chart.
 
 ## Cross-cluster operation
 

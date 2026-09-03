@@ -44,12 +44,14 @@ Example:
 - lm-serve-staging
 
 3. Per-environment values files
-Always layer the consumer-side model chart files:
+The model chart retains consumer-side env files:
 - helm/lm-serve-models/values.yaml
 - helm/lm-serve-models/values.<env>.yaml
 
 The source catalog definitions live under the publisher chart instead:
 - helm/lm-serve-publisher/catalogs/<env>.yaml
+
+This keeps source-of-truth catalog data in the publisher while the model chart stays focused on runtime consumption.
 
 4. Resource governance
 Apply quotas and limits per namespace so one environment does not starve others.
@@ -57,45 +59,34 @@ Apply quotas and limits per namespace so one environment does not starve others.
 5. Secret separation
 Keep object storage and auth secrets per environment and namespace.
 
-6. Auth namespace strategy
-- Per-environment auth: set `AUTH_NAMESPACE` equal to each environment namespace.
-- Shared auth: set one common `AUTH_NAMESPACE` across all environments.
-
 ## Example workflow
 
 Create a new environment profile from chart-local sample files:
 
 ```bash
-cp ../helm/lm-serve-models/values.sample-env.yaml ../helm/lm-serve-models/values.dev-west.yaml
-cp ../helm/lm-serve-publisher/catalogs/sample-env.yaml ../helm/lm-serve-publisher/catalogs/dev-west.yaml
+cp helm/lm-serve-models/values.sample-env.yaml helm/lm-serve-models/values.dev-west.yaml
+cp helm/lm-serve-publisher/catalogs/sample-env.yaml helm/lm-serve-publisher/catalogs/dev-west.yaml
 ```
 
 Render for that environment:
 
 ```bash
-helm template lm-serve-models ../helm/lm-serve-models -n lm-serve-dev-west \
-  -f ../helm/lm-serve-models/values.yaml \
-  -f ../helm/lm-serve-models/values.dev-west.yaml
+helm template lm-serve-models helm/lm-serve-models -n lm-serve-dev-west \
+  -f helm/lm-serve-models/values.yaml \
+  -f helm/lm-serve-models/values.dev-west.yaml
 ```
 
 Deploy with Make:
 
 ```bash
-make apply-base ENV=dev-west NAMESPACE=lm-serve-dev-west AUTH_NAMESPACE=lm-serve-dev-west
+make apply-base ENV=dev-west NAMESPACE=lm-serve-dev-west
 make apply-model-reconciler ENV=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-helm upgrade --install lm-serve-publisher ../helm/lm-serve-publisher -n lm-serve-dev-west --create-namespace \
-  -f ../helm/lm-serve-publisher/values.yaml
-```
-
-Shared-auth example:
-
-```bash
-make apply-base ENV=dev-west NAMESPACE=lm-serve-dev-west AUTH_NAMESPACE=lm-serve-auth-shared
-make apply-base ENV=staging NAMESPACE=lm-serve-staging AUTH_NAMESPACE=lm-serve-auth-shared
+helm upgrade --install lm-serve-publisher helm/lm-serve-publisher -n lm-publisher --create-namespace \
+  -f helm/lm-serve-publisher/values.yaml
 ```
 
 For the publisher chart specifically, create or copy chart-local environment files in
-`../helm/lm-serve-publisher/` and manage publisher rollout independently from model rollout.
+`helm/lm-serve-publisher/` and manage publisher rollout independently from model rollout. The publisher install is namespace-scoped and does not need `ENV` because it reads the canonical catalog registry from the chart values and catalog files.
 
 ## Practical guidance
 

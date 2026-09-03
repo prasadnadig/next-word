@@ -1,6 +1,0 @@
-apiVersion: v2
-name: lm-serve
-description: Helm chart for lm-serve catalog, model publisher, and model reconciler resources
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

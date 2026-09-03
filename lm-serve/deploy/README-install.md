@@ -7,8 +7,8 @@ This guide explains how to install and operate the vLLM serving stack model reco
 `deploy_lm_serve_catalog.sh` reconciles a shared model catalog into:
 
 - One StatefulSet per enabled model (stable per-replica PVC cache).
-- One in-cluster auth service (API key or JWT).
-- One Envoy edge deployment exposed via Service type `LoadBalancer` (default).
+- One Service per enabled model.
+- Route data that the platform chart can consume through the shared route ConfigMap contract.
 
 Because reconciliation is catalog-driven, model add/update/remove operations are done by editing one ConfigMap and re-running the script (or running with watch mode).
 
@@ -27,9 +27,15 @@ Make-based shortcut:
 
 ```bash
 cd ..
-make apply-base
+make apply-base ENV=sample-env
 make deploy-once
 ```
+
+Auth namespace selection:
+
+- Default behavior: `AUTH_NAMESPACE` follows `ENV` (for `ENV=sample-env`, auth deploys to `sample-env`).
+- To keep auth per workload namespace instead, run with `AUTH_NAMESPACE=<workload-namespace>`.
+- To share one auth deployment across multiple workload namespaces, set the same `AUTH_NAMESPACE` value for each environment.
 
 Equivalent explicit workflow:
 
@@ -39,16 +45,31 @@ Equivalent explicit workflow:
 kubectl create namespace lm-serve
 ```
 
-2. Apply base Helm chart resources and secrets
+2. Apply split charts and namespace secrets
 
 ```bash
-helm upgrade --install lm-serve ../helm/lm-serve -n lm-serve --create-namespace \
-  -f ../helm/lm-serve/values-base.yaml \
-  -f ../helm/lm-serve/values.sample-env.yaml \
-  -f ../helm/lm-serve/values.sample-env.models.yaml \
-  --set modelPublisherCronjob.enabled=false \
+helm upgrade --install lm-serve-auth ../helm/lm-serve-auth -n lm-serve --create-namespace \
+  -f ../helm/lm-serve-auth/values.yaml \
+  --set-string authService.image=REPLACE_ME_REGISTRY/lm-serve-auth-service:0.1.0
+
+helm upgrade --install lm-serve-platform ../helm/lm-serve-platform -n lm-serve --create-namespace \
+  -f ../helm/lm-serve-platform/values.yaml
+
+helm upgrade --install lm-serve-models ../helm/lm-serve-models -n lm-serve --create-namespace \
+  -f ../helm/lm-serve-models/values.yaml \
+  -f ../helm/lm-serve-models/values.sample-env.yaml \
   --set modelReconciler.enabled=false
+
 kubectl -n lm-serve apply -f ../manifests/secrets.examples.yaml
+```
+
+If you are building the auth service image from source in this repository, use:
+
+```bash
+cd ..
+make build-auth-image AUTH_IMAGE=<registry>/lm-serve-auth-service:0.1.0
+make push-auth-image AUTH_IMAGE=<registry>/lm-serve-auth-service:0.1.0
+make apply-auth-service AUTH_IMAGE=<registry>/lm-serve-auth-service:0.1.0
 ```
 
 3. Generate initial auth materials for small-team tests
@@ -70,7 +91,7 @@ bash deploy_lm_serve_catalog.sh \
   --namespace lm-serve \
   --catalog-configmap lm-serve-model-catalog \
   --catalog-key models.yaml \
-  --edge-service-type LoadBalancer
+  --model-service-type LoadBalancer
 ```
 
 6. Verify resources
@@ -85,6 +106,16 @@ kubectl -n lm-serve get svc
 
 ```bash
 kubectl -n lm-serve get svc vllm-edge
+```
+
+8. If you want the model reconciler to run in-cluster, apply the models chart Job instead of the local script
+
+```bash
+helm upgrade --install lm-serve-models ../helm/lm-serve-models -n lm-serve \
+  -f ../helm/lm-serve-models/values.yaml \
+  -f ../helm/lm-serve-models/values.sample-env.yaml \
+  --set modelReconciler.enabled=true \
+  --set-string modelReconciler.image=REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 ```
 
 ## Watch mode (optional)
@@ -111,10 +142,9 @@ docker push REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 Enable model reconciler through Helm:
 
 ```bash
-helm upgrade --install lm-serve ../helm/lm-serve -n lm-serve \
-  -f ../helm/lm-serve/values-base.yaml \
-  -f ../helm/lm-serve/values.sample-env.yaml \
-  -f ../helm/lm-serve/values.sample-env.models.yaml \
+helm upgrade --install lm-serve-models ../helm/lm-serve-models -n lm-serve \
+  -f ../helm/lm-serve-models/values.yaml \
+  -f ../helm/lm-serve-models/values.sample-env.yaml \
   --set modelReconciler.enabled=true \
   --set-string modelReconciler.image=REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 ```

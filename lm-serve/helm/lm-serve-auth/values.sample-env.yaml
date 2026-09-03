@@ -1,0 +1,14 @@
+authService:
+  enabled: true
+
+secrets:
+  mode: create
+  existingSecretName: lm-serve-auth-secrets
+  keys:
+    apiKeys: api_keys.txt
+    jwtSecret: jwt_hs256_secret
+  apiKeys:
+    - REPLACE_ME_API_KEY
+  jwtSecret: REPLACE_ME_JWT_SECRET
+  externalRef:
+    enabled: false

@@ -1,0 +1,88 @@
+# Sample-env model catalog profile
+#
+# Purpose:
+# - Default/reference catalog for a broadly representative LLM environment.
+# - Keep one strong general-purpose model visible while leaving a second larger
+#   candidate disabled until capacity and licensing requirements are confirmed.
+#
+# Historical note:
+# - This was the initial example for a reusable model-serving environment, meant
+#   to exercise a realistic production-style deployment with a standard
+#   instruction-tuned model.
+#
+# Why this fits:
+# - mistralai/Mistral-7B-Instruct-v0.3 is a strong, widely used instruction-tuned
+#   model that exercises standard chat/inference workflows and typical serving
+#   configurations without requiring a very large deployment footprint.
+# - The secondary llama-3-1-8b-instruct entry is retained as a follow-up option,
+#   but kept disabled by default because it is larger and may need additional
+#   validation around licensing and resource sizing.
+#
+# Caveats:
+# - Large models like Mistral-7B and Llama-3.1-8B are not small smoke fixtures;
+#   they need adequate GPU memory and capacity planning.
+# - Keep this profile for representative validation, not for tiny smoke tests.
+
+models:
+  - name: mistral-7b-instruct
+    enabled: true
+    source:
+      type: huggingface
+      repo: mistralai/Mistral-7B-Instruct-v0.3
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/mistral-7b-instruct
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 120Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 8192
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      runtimeClassName: ""
+      priorityClassName: ""
+      serviceAccountName: ""
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: lm-serve/model-name
+                      operator: In
+                      values:
+                        - mistral-7b-instruct
+      extraArgs:
+        - --gpu-memory-utilization
+        - "0.9"
+
+  - name: llama-3-1-8b-instruct
+    enabled: false
+    source:
+      type: huggingface
+      repo: meta-llama/Llama-3.1-8B-Instruct
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/llama-3-1-8b-instruct
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 150Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 8192
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      extraArgs: []

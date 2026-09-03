@@ -75,16 +75,32 @@ class Catalog:
     models: List[ModelConfig]
 
 
+@dataclasses.dataclass(frozen=True)
+class EnvironmentCatalog:
+    env: str
+    namespace: str
+    configmap_name: str
+    key: str
+    catalog: Catalog
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Publish model artifacts to S3-compatible storage")
-    parser.add_argument("--catalog-file", help="Path to local catalog YAML file")
-    parser.add_argument("--catalog-configmap", default="lm-serve-model-catalog", help="ConfigMap name")
+    parser.add_argument("--catalog-file", action="append", default=[], help="Path to a local catalog YAML file; repeat for multiple env-specific catalogs")
+    parser.add_argument("--catalog-env-file", action="append", default=[], help="Repeatable env=path mapping for per-env catalogs (example: --catalog-env-file dev=./dev.yaml)")
+    parser.add_argument("--env", default="default", help="Environment name used when a single catalog is published")
+    parser.add_argument("--catalog-configmap", action="append", default=[], help="ConfigMap name to read; repeat for multiple env-specific catalogs")
+    parser.add_argument("--catalog-env", action="append", default=[], help="Environment name corresponding to each --catalog-configmap value")
+    parser.add_argument("--catalog-configmap-prefix", default="lm-serve-model-catalog", help="Prefix used for generated env-specific ConfigMaps")
     parser.add_argument("--catalog-namespace", default="lm-serve", help="ConfigMap namespace")
+    parser.add_argument("--target-namespace", default="", help="Namespace to write generated per-env catalog ConfigMaps into")
     parser.add_argument("--catalog-key", default="models.yaml", help="ConfigMap data key")
     parser.add_argument("--run-id", default="", help="Optional run ID for staging prefix")
     parser.add_argument("--model", default="", help="Optional single model name filter")
     parser.add_argument("--max-models", type=int, default=0, help="Optional cap on number of models to publish")
     parser.add_argument("--prune-staging", action="store_true", help="Delete staging prefix after promotion")
+    parser.add_argument("--shared-artifacts-prefix", default="_shared", help="S3 prefix used for deduplicated artifacts shared across env catalogs")
+    parser.add_argument("--write-env-catalogs", action="store_true", help="Create or update per-env catalog ConfigMaps in the target namespace")
     return parser.parse_args()
 
 
@@ -140,6 +156,174 @@ def parse_catalog(text: str) -> Catalog:
         models.append(model)
 
     return Catalog(storage=storage, models=models)
+
+
+def parse_env_catalog_spec(spec: str) -> Tuple[str, str]:
+    if "=" in spec:
+        env, path = spec.split("=", 1)
+    elif ":" in spec:
+        env, path = spec.split(":", 1)
+    else:
+        raise ValueError(f"Invalid catalog env spec '{spec}'. Expected ENV=PATH or ENV:PATH")
+    return env.strip(), path.strip()
+
+
+def model_config_to_dict(model: ModelConfig) -> Dict[str, object]:
+    return {
+        "name": model.name,
+        "enabled": model.enabled,
+        "source": {
+            "type": model.source.source_type,
+            "repo": model.source.repo,
+            "revision": model.source.revision,
+            "authEnv": model.source.auth_env,
+        },
+        "storage": {"prefix": model.storage_prefix},
+    }
+
+
+def catalog_to_env_yaml(catalog: Catalog, env: str) -> str:
+    payload = {
+        "storage": {
+            "bucket": catalog.storage.bucket,
+            "endpoint": catalog.storage.endpoint,
+            "region": catalog.storage.region,
+        },
+        "models": [model_config_to_dict(model) for model in catalog.models],
+    }
+    return yaml.safe_dump(payload, sort_keys=False, default_flow_style=False)
+
+
+def load_catalog_from_file(path: str) -> Catalog:
+    text = pathlib.Path(path).read_text(encoding="utf-8")
+    parsed = yaml.safe_load(text)
+    if isinstance(parsed, dict) and parsed.get("kind") == "ConfigMap":
+        data = parsed.get("data", {})
+        if not isinstance(data, dict):
+            raise ValueError(f"ConfigMap manifest in {path} does not contain a data map")
+        if "models.yaml" not in data:
+            raise ValueError(f"ConfigMap manifest in {path} missing data key 'models.yaml'")
+        text = str(data["models.yaml"])
+    return parse_catalog(text)
+
+
+def load_catalogs(args: argparse.Namespace) -> List[EnvironmentCatalog]:
+    if args.catalog_env_file:
+        entries: List[EnvironmentCatalog] = []
+        for spec in args.catalog_env_file:
+            env, path = parse_env_catalog_spec(spec)
+            catalog = load_catalog_from_file(path)
+            namespace = args.target_namespace or args.catalog_namespace
+            configmap_name = f"{args.catalog_configmap_prefix}-{env}"
+            entries.append(
+                EnvironmentCatalog(
+                    env=env,
+                    namespace=namespace,
+                    configmap_name=configmap_name,
+                    key=args.catalog_key,
+                    catalog=catalog,
+                )
+            )
+        return entries
+
+    if args.catalog_file:
+        if len(args.catalog_file) > 1:
+            raise ValueError("Use --catalog-env-file ENV=PATH for multiple catalogs. The single --catalog-file path is for one catalog only.")
+        catalog = load_catalog_from_file(args.catalog_file[0])
+        namespace = args.target_namespace or args.catalog_namespace
+        configmap_name = (args.catalog_configmap[0] if args.catalog_configmap else f"{args.catalog_configmap_prefix}-{args.env}")
+        return [
+            EnvironmentCatalog(
+                env=args.env,
+                namespace=namespace,
+                configmap_name=configmap_name,
+                key=args.catalog_key,
+                catalog=catalog,
+            )
+        ]
+
+    if args.catalog_configmap:
+        if args.catalog_env and len(args.catalog_env) != len(args.catalog_configmap):
+            raise ValueError("The number of --catalog-env values must match the number of --catalog-configmap values")
+
+        names = args.catalog_configmap
+        env_names = args.catalog_env or [args.env for _ in names]
+        entries: List[EnvironmentCatalog] = []
+        for name, env_name in zip(names, env_names):
+            text = load_catalog_text_from_configmap(
+                namespace=args.catalog_namespace,
+                name=name,
+                key=args.catalog_key,
+            )
+            catalog = parse_catalog(text)
+            entries.append(
+                EnvironmentCatalog(
+                    env=env_name,
+                    namespace=args.target_namespace or args.catalog_namespace,
+                    configmap_name=name,
+                    key=args.catalog_key,
+                    catalog=catalog,
+                )
+            )
+        return entries
+
+    default_configmap_name = "lm-serve-model-catalog"
+    text = load_catalog_text_from_configmap(
+        namespace=args.catalog_namespace,
+        name=default_configmap_name,
+        key=args.catalog_key,
+    )
+    catalog = parse_catalog(text)
+    return [
+        EnvironmentCatalog(
+            env=args.env,
+            namespace=args.target_namespace or args.catalog_namespace,
+            configmap_name=default_configmap_name,
+            key=args.catalog_key,
+            catalog=catalog,
+        )
+    ]
+
+
+def upsert_configmap(namespace: str, name: str, key: str, value: str) -> None:
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
+
+    api = client.CoreV1Api()
+    try:
+        api.read_namespaced_config_map(name=name, namespace=namespace)
+        api.patch_namespaced_config_map(
+            name=name,
+            namespace=namespace,
+            body=client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(name=name, namespace=namespace),
+                data={key: value},
+            ),
+        )
+    except client.exceptions.ApiException as exc:
+        if exc.status == 404:
+            api.create_namespaced_config_map(
+                namespace=namespace,
+                body=client.V1ConfigMap(
+                    metadata=client.V1ObjectMeta(name=name, namespace=namespace),
+                    data={key: value},
+                ),
+            )
+        else:
+            raise
+
+
+def write_env_catalogs(env_catalogs: Iterable[EnvironmentCatalog]) -> None:
+    for env_catalog in env_catalogs:
+        rendered = catalog_to_env_yaml(env_catalog.catalog, env_catalog.env)
+        upsert_configmap(
+            namespace=env_catalog.namespace,
+            name=env_catalog.configmap_name,
+            key=env_catalog.key,
+            value=rendered,
+        )
 
 
 def s3_client(storage: StorageConfig) -> BaseClient:
@@ -210,7 +394,13 @@ def delete_prefix(s3: BaseClient, bucket: str, prefix: str) -> None:
         s3.delete_objects(Bucket=bucket, Delete={"Objects": batch})
 
 
-def build_manifest(model: ModelConfig, revision: str, files: List[Tuple[str, str, int]], run_id: str) -> Dict[str, object]:
+def build_manifest(
+    model: ModelConfig,
+    revision: str,
+    files: List[Tuple[str, str, int, str]],
+    run_id: str,
+    shared_prefix: str,
+) -> Dict[str, object]:
     return {
         "model_name": model.name,
         "source": {
@@ -221,11 +411,12 @@ def build_manifest(model: ModelConfig, revision: str, files: List[Tuple[str, str
         "storage": {
             "prefix": model.storage_prefix,
             "current_prefix": f"{model.storage_prefix}/current",
+            "shared_artifacts_prefix": shared_prefix,
             "run_id": run_id,
         },
         "artifacts": [
-            {"path": rel, "sha256": sha, "bytes": size}
-            for rel, sha, size in sorted(files, key=lambda x: x[0])
+            {"path": rel, "sha256": sha, "bytes": size, "s3_key": s3_key}
+            for rel, sha, size, s3_key in sorted(files, key=lambda x: x[0])
         ],
         "published_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
@@ -243,6 +434,8 @@ def publish_model(
     model: ModelConfig,
     run_id: str,
     prune_staging: bool,
+    shared_prefix: str,
+    shared_uploads: Optional[set] = None,
 ) -> None:
     if model.source.source_type.lower() != "huggingface":
         raise ValueError(f"Unsupported source type for {model.name}: {model.source.source_type}")
@@ -266,41 +459,37 @@ def publish_model(
         if not files:
             raise RuntimeError(f"No artifacts found after download for model {model.name}")
 
-        checksummed: List[Tuple[str, str, int]] = []
+        checksummed: List[Tuple[str, str, int, str]] = []
         staging_prefix = f"{model.storage_prefix}/_staging/{run_id}"
+        shared_uploads = shared_uploads if shared_uploads is not None else set()
         for file_path in files:
             rel = str(file_path.relative_to(local_dir)).replace("\\", "/")
             sha = file_sha256(file_path)
             size = file_path.stat().st_size
-            checksummed.append((rel, sha, size))
+            shared_key = f"{shared_prefix}/{sha}/{rel}"
+            try:
+                s3.head_object(Bucket=storage.bucket, Key=shared_key)
+            except Exception:
+                upload_file(s3, storage.bucket, shared_key, file_path)
+                shared_uploads.add(shared_key)
+            checksummed.append((rel, sha, size, shared_key))
 
-            key = f"{staging_prefix}/{rel}"
-            upload_file(s3, storage.bucket, key, file_path)
+            staging_key = f"{staging_prefix}/{rel}"
+            if prune_staging:
+                try:
+                    s3.head_object(Bucket=storage.bucket, Key=staging_key)
+                except Exception:
+                    upload_file(s3, storage.bucket, staging_key, file_path)
 
-        staged_keys = list_keys_under_prefix(s3, storage.bucket, f"{staging_prefix}/")
-        if len(staged_keys) != len(checksummed):
-            raise RuntimeError(
-                f"Staging verification failed for {model.name}: expected {len(checksummed)} objects, found {len(staged_keys)}"
-            )
-
-        print(f"[INFO] Promoting staged artifacts for {model.name} to current/")
-        current_prefix = f"{model.storage_prefix}/current"
-        copied = copy_keys_between_prefixes(
-            s3=s3,
-            bucket=storage.bucket,
-            source_prefix=staging_prefix,
-            destination_prefix=current_prefix,
-        )
-        if copied != len(checksummed):
-            raise RuntimeError(
-                f"Promotion copy mismatch for {model.name}: copied {copied}, expected {len(checksummed)}"
-            )
+        if prune_staging:
+            delete_prefix(s3, storage.bucket, staging_prefix)
 
         manifest = build_manifest(
             model=model,
             revision=resolve_repo_revision(model),
             files=checksummed,
             run_id=run_id,
+            shared_prefix=shared_prefix,
         )
         manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
 
@@ -309,16 +498,13 @@ def publish_model(
 
         pointer = {
             "active_manifest": run_manifest_key,
-            "current_prefix": current_prefix,
+            "shared_artifacts_prefix": shared_prefix,
             "model_name": model.name,
-            "promoted_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "published_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
         pointer_bytes = json.dumps(pointer, indent=2).encode("utf-8")
         pointer_key = f"{model.storage_prefix}/manifest.json"
         s3.put_object(Bucket=storage.bucket, Key=pointer_key, Body=pointer_bytes, ContentType="application/json")
-
-        if prune_staging:
-            delete_prefix(s3, storage.bucket, staging_prefix)
 
         print(f"[OK] Published model {model.name}. Manifest: s3://{storage.bucket}/{run_manifest_key}")
 
@@ -354,24 +540,40 @@ def filtered_models(args: argparse.Namespace, models: Iterable[ModelConfig]) -> 
 
 def main() -> None:
     args = parse_args()
-    catalog = load_catalog(args)
-    s3 = s3_client(catalog.storage)
+    env_catalogs = load_catalogs(args)
+    if not env_catalogs:
+        raise SystemExit("No catalog inputs were provided")
 
-    selected = filtered_models(args, catalog.models)
-    if not selected:
-        raise SystemExit("No enabled models selected for publishing")
+    primary_catalog = env_catalogs[0].catalog
+    s3 = s3_client(primary_catalog.storage)
+
+    if args.write_env_catalogs:
+        target_namespace = args.target_namespace or args.catalog_namespace
+        for env_catalog in env_catalogs:
+            env_catalog = dataclasses.replace(env_catalog, namespace=target_namespace)
+            write_env_catalogs([env_catalog])
 
     run_id = args.run_id.strip() or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    shared_uploads: set = set()
 
-    print(f"[INFO] Starting publish run {run_id} for {len(selected)} model(s)")
-    for model in selected:
-        publish_model(
-            s3=s3,
-            storage=catalog.storage,
-            model=model,
-            run_id=run_id,
-            prune_staging=args.prune_staging,
-        )
+    for env_catalog in env_catalogs:
+        catalog = env_catalog.catalog
+        selected = filtered_models(args, catalog.models)
+        if not selected:
+            print(f"[INFO] No enabled models selected for env {env_catalog.env}; skipping")
+            continue
+
+        print(f"[INFO] Starting publish run {run_id} for env {env_catalog.env} with {len(selected)} model(s)")
+        for model in selected:
+            publish_model(
+                s3=s3,
+                storage=catalog.storage,
+                model=model,
+                run_id=run_id,
+                prune_staging=args.prune_staging,
+                shared_prefix=args.shared_artifacts_prefix,
+                shared_uploads=shared_uploads,
+            )
 
     print("[OK] Model publication completed")
 

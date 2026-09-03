@@ -1,0 +1,15 @@
+{{- if .Values.authService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.authService.name }}
+  labels:
+{{ include "lm-serve-auth.labels" . | indent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Values.authService.name }}
+  ports:
+  - name: http
+    port: {{ .Values.authService.service.port }}
+    targetPort: {{ .Values.authService.service.port }}
+{{- end }}
