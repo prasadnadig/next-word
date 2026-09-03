@@ -6,8 +6,8 @@ CATALOG_CONFIGMAP ?= lm-serve-model-catalog
 CATALOG_KEY ?= models.yaml
 EDGE_SERVICE_TYPE ?= LoadBalancer
 
-# Configure optional image overrides for in-cluster reconciler and publisher.
-DEPLOYER_IMAGE ?= REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
+# Configure optional image overrides for in-cluster model reconciliation and publishing.
+MODEL_RECONCILER_IMAGE ?= REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 PUBLISHER_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
 
 # Configure Helm chart wiring and layered values model.
@@ -29,42 +29,44 @@ help:
 	@echo "LM Serve Make Targets"
 	@echo ""
 	@echo "Happy-path flow (bootstrap -> reconcile -> validate):"
-	@echo "  make helm-template ENV=<env>"
-	@echo "    done: render chart using values-base + values.<env> + values.<env>.models"
+	@echo "  make render-helm-template ENV=<env>"
+	@echo "    done: render manifests for ConfigMaps, Services, Deployments, StatefulSets, Jobs/CronJobs, and Secret references"
+	@echo "    done+: validate layered values before applying resources to the cluster"
 	@echo "  make helm-upgrade-base ENV=<env>"
-	@echo "    done: apply base chart resources; disable publisher + reconciler"
+	@echo "    done: apply base LM Serve chart resources for catalog + serving edge; disable optional publisher/reconciler controllers"
 	@echo "  make apply-base ENV=<env>"
-	@echo "    done: run [helm-upgrade-base] + apply example secrets manifest"
+	@echo "    done: run [helm-upgrade-base] and apply namespace-scoped example Secrets required by auth/object-storage workflows"
 	@echo "  make deploy-once"
-	@echo "    done: reconcile catalog once; create/update model workloads + edge"
+	@echo "    done: reconcile catalog once; create/update model StatefulSets, related Services, and shared serving edge components"
 	@echo "  make generate-auth-materials"
-	@echo "    done: generate local API key/JWT bootstrap test materials"
-	@echo "  make smoke-api-key API_KEY=<k>"
-	@echo "    done: validate all enabled models via API-key auth"
-	@echo "  make smoke-jwt JWT_TOKEN=<t>"
-	@echo "    done: validate all enabled models via JWT auth"
-	@echo "  make smoke-both API_KEY=<k> JWT_TOKEN=<t>"
-	@echo "    done: validate all enabled models via both auth modes"
+	@echo "    done: generate bootstrap API key/JWT materials for small-team validation"
+	@echo "  make smoke-test-api-key API_KEY=<k>"
+	@echo "    done: validate edge auth + baseline inference for all enabled models via API-key flow"
+	@echo "  make smoke-test-jwt JWT_TOKEN=<t>"
+	@echo "    done: validate edge auth + baseline inference for all enabled models via JWT flow"
+	@echo "  make smoke-test-all API_KEY=<k> JWT_TOKEN=<t>"
+	@echo "    done: validate all configured auth paths and baseline inference for all enabled models"
 	@echo "  make happy-path ..."
-	@echo "    done: run [apply-base] -> [deploy-once] -> [smoke-api-key|smoke-jwt|smoke-both]"
+	@echo "    done: run [apply-base] -> [deploy-once] -> [smoke-test-api-key|smoke-test-jwt|smoke-test-all]"
+	@echo "    done+: produces a validated baseline LM Serve deployment from chart + catalog + auth test"
 	@echo ""
 	@echo "Continuous reconciliation and automation options:"
 	@echo "  make deploy-watch-local"
-	@echo "    done: reconcile continuously from local machine every 60s"
-	@echo "  make build-deployer-image"
-	@echo "    done: build Script A in-cluster reconciler image"
-	@echo "  make push-deployer-image"
-	@echo "    done: push Script A in-cluster reconciler image"
-	@echo "  make apply-model-reconciler ENV=<env> DEPLOYER_IMAGE=<img>"
-	@echo "    done: enable modelReconciler and set controller image"
+	@echo "    done: reconcile continuously from local machine every 60s to keep workloads aligned with catalog edits"
+	@echo "  make build-model-reconciler-image"
+	@echo "    done: build model deployment reconciler container image"
+	@echo "  make push-model-reconciler-image"
+	@echo "    done: push model deployment reconciler image to the specified container registry"
+	@echo "  make apply-model-reconciler ENV=<env> MODEL_RECONCILER_IMAGE=<img>"
+	@echo "    done: enable in-cluster model reconciliation and configure the reconciler image used by the Job"
 	@echo "  make build-model-publisher-image"
-	@echo "    done: build Script B model publisher image"
+	@echo "    done: build model catalog publisher image"
 	@echo "  make push-model-publisher-image"
-	@echo "    done: push Script B model publisher image"
+	@echo "    done: push model catalog publisher image to the specified container registry"
 	@echo "  make apply-model-publisher-rbac ENV=<env>"
-	@echo "    done: enable publisher RBAC resources"
+	@echo "    done: enable RBAC resources required for model catalog publishing automation"
 	@echo "  make apply-model-publisher-cronjob ENV=<env> PUBLISHER_IMAGE=<img>"
-	@echo "    done: enable publisher cronjob and set image"
+	@echo "    done: enable scheduled model publishing CronJob and configure its runtime image"
 	@echo ""
 	@echo "Diagnostics and prerequisites:"
 	@echo "  make check-tools"
@@ -77,8 +79,8 @@ help:
 	@echo "Override variables (set as make VAR=value):"
 	@echo "  NAMESPACE=$(NAMESPACE) CATALOG_CONFIGMAP=$(CATALOG_CONFIGMAP) CATALOG_KEY=$(CATALOG_KEY)"
 	@echo "    done: select Kubernetes namespace and model catalog location"
-	@echo "  DEPLOYER_IMAGE=$(DEPLOYER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE)"
-	@echo "    done: set image references for reconciler and publisher automation"
+	@echo "  MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE)"
+	@echo "    done: set runtime images for model reconciliation and model publishing automation"
 	@echo "  ENV=<env-name> (required for Helm targets; example: ENV=sample-env)"
 	@echo "    done: select values.<env>.yaml and values.<env>.models.yaml"
 	@echo "  HELM_RELEASE=$(HELM_RELEASE) HELM_CHART=$(HELM_CHART) HELM_BASE_VALUES=$(HELM_BASE_VALUES) HELM_EXTRA_ARGS='$(HELM_EXTRA_ARGS)'"
@@ -116,8 +118,8 @@ require-env:
 	@test -f "$(HELM_CHART)/values.$(ENV).models.yaml" || (echo "Missing $(HELM_CHART)/values.$(ENV).models.yaml" && exit 1)
 
 # Step 1: Bootstrap base chart resources and namespace secrets.
-.PHONY: helm-template
-helm-template: check-helm require-env
+.PHONY: render-helm-template
+render-helm-template: check-helm require-env
 	helm template $(HELM_RELEASE) $(HELM_CHART) -n $(NAMESPACE) $(HELM_VALUES) $(HELM_EXTRA_ARGS)
 
 .PHONY: helm-upgrade-base
@@ -153,8 +155,8 @@ deploy-watch-local: check-kubectl check-yq
 generate-auth-materials:
 	bash deploy/generate_test_auth_materials.sh --team-size 3 --jwt-sub dev-user --jwt-ttl-sec 3600
 
-.PHONY: smoke-api-key
-smoke-api-key: check-kubectl check-yq
+.PHONY: smoke-test-api-key
+smoke-test-api-key: check-kubectl check-yq
 	@if [[ -z "$(API_KEY)" ]]; then echo "Set API_KEY variable"; exit 1; fi
 	bash deploy/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
@@ -163,8 +165,8 @@ smoke-api-key: check-kubectl check-yq
 	  --api-key "$(API_KEY)" \
 	  --prompt "$(PROMPT)"
 
-.PHONY: smoke-jwt
-smoke-jwt: check-kubectl check-yq
+.PHONY: smoke-test-jwt
+smoke-test-jwt: check-kubectl check-yq
 	@if [[ -z "$(JWT_TOKEN)" ]]; then echo "Set JWT_TOKEN variable"; exit 1; fi
 	bash deploy/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
@@ -173,8 +175,8 @@ smoke-jwt: check-kubectl check-yq
 	  --jwt-token "$(JWT_TOKEN)" \
 	  --prompt "$(PROMPT)"
 
-.PHONY: smoke-both
-smoke-both: check-kubectl check-yq
+.PHONY: smoke-test-all
+smoke-test-all: check-kubectl check-yq
 	@if [[ -z "$(API_KEY)" ]]; then echo "Set API_KEY variable"; exit 1; fi
 	@if [[ -z "$(JWT_TOKEN)" ]]; then echo "Set JWT_TOKEN variable"; exit 1; fi
 	bash deploy/smoke_test_lm_serve_catalog.sh \
@@ -198,29 +200,29 @@ happy-path:
 	@echo "[3/4] Running smoke test against enabled models through the edge endpoint."
 	@echo "      Why: validates auth path plus basic inference availability after deployment."
 	@if [[ -n "$(API_KEY)" && -n "$(JWT_TOKEN)" ]]; then \
-		$(MAKE) smoke-both API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
+		$(MAKE) smoke-test-all API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
 	elif [[ -n "$(API_KEY)" ]]; then \
-		$(MAKE) smoke-api-key API_KEY="$(API_KEY)" PROMPT="$(PROMPT)"; \
+		$(MAKE) smoke-test-api-key API_KEY="$(API_KEY)" PROMPT="$(PROMPT)"; \
 	else \
-		$(MAKE) smoke-jwt JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
+		$(MAKE) smoke-test-jwt JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
 	fi
 	@echo "[4/4] Happy path complete."
 	@echo "      What next: use deploy-watch-local or apply-model-reconciler for continuous model reconciliation."
 
 # Optional extension: Automate in-cluster model reconciliation.
-.PHONY: build-deployer-image
-build-deployer-image: check-docker
-	docker build -t $(DEPLOYER_IMAGE) deploy
+.PHONY: build-model-reconciler-image
+build-model-reconciler-image: check-docker
+	docker build -t $(MODEL_RECONCILER_IMAGE) deploy
 
-.PHONY: push-deployer-image
-push-deployer-image: check-docker
-	docker push $(DEPLOYER_IMAGE)
+.PHONY: push-model-reconciler-image
+push-model-reconciler-image: check-docker
+	docker push $(MODEL_RECONCILER_IMAGE)
 
 .PHONY: apply-model-reconciler
 apply-model-reconciler: check-helm check-kubectl require-env
 	$(HELM_UPGRADE_INSTALL) \
 	  --set modelReconciler.enabled=true \
-	  --set-string modelReconciler.image=$(DEPLOYER_IMAGE)
+	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE)
 
 # Optional extension: Automate model publishing.
 .PHONY: build-model-publisher-image

@@ -1,4 +1,4 @@
-# Runtime image for running Script A as an in-cluster model reconciler.
+# Runtime image for running the model deployment reconciler in-cluster.
 FROM alpine:3.21
 
 ARG KUBECTL_VERSION=v1.32.3

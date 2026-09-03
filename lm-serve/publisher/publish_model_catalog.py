@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publishes model artifacts from source to S3-compatible storage.
 
-This script reads the same model catalog used by the vLLM deployer and pushes
+This script reads the same model catalog used by the model deployment reconciler and pushes
 model artifacts to an object-storage staging prefix, then promotes them via a
 manifest pointer for stronger consistency guarantees.
 

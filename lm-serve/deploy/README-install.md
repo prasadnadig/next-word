@@ -1,8 +1,8 @@
-# Script A Installation And Operations
+# Model Deployment Reconciler Installation And Operations
 
 This guide explains how to install and operate the vLLM serving stack model reconciler.
 
-## What Script A does
+## What the model deployment reconciler does
 
 `deploy_lm_serve_catalog.sh` reconciles a shared model catalog into:
 
@@ -101,7 +101,7 @@ bash deploy_lm_serve_catalog.sh \
 
 ## In-cluster model reconciler option (recommended for continuous model reconciliation)
 
-Build and push Script A image:
+Build and push the model deployment reconciler image:
 
 ```bash
 docker build -t REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0 .
@@ -119,15 +119,15 @@ helm upgrade --install lm-serve ../helm/lm-serve -n lm-serve \
   --set-string modelReconciler.image=REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 ```
 
-The model reconciler Job runs Script A in watch mode every 60 seconds internally.
+The model reconciler Job runs the model deployment reconciler in watch mode every 60 seconds internally.
 
 Make-based variant:
 
 ```bash
 cd ..
-make build-deployer-image DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make push-deployer-image DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make apply-model-reconciler ENV=sample-env DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make build-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make push-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-model-reconciler ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 ```
 
 ## Smoke test all enabled models
@@ -149,9 +149,9 @@ Make-based variant:
 
 ```bash
 cd ..
-make smoke-api-key API_KEY=<api-key>
-make smoke-jwt JWT_TOKEN=<jwt>
-make smoke-both API_KEY=<api-key> JWT_TOKEN=<jwt>
+make smoke-test-api-key API_KEY=<api-key>
+make smoke-test-jwt JWT_TOKEN=<jwt>
+make smoke-test-all API_KEY=<api-key> JWT_TOKEN=<jwt>
 ```
 
 ## Catalog change behavior

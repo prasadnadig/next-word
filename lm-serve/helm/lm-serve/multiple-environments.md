@@ -77,7 +77,7 @@ Deploy with Make:
 
 ```bash
 make helm-upgrade-base ENV=dev-west NAMESPACE=lm-serve-dev-west HELM_RELEASE=lm-serve-dev-west
-make apply-model-reconciler ENV=dev-west NAMESPACE=lm-serve-dev-west HELM_RELEASE=lm-serve-dev-west DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-model-reconciler ENV=dev-west NAMESPACE=lm-serve-dev-west HELM_RELEASE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 make apply-model-publisher-rbac ENV=dev-west NAMESPACE=lm-serve-dev-west HELM_RELEASE=lm-serve-dev-west
 make apply-model-publisher-cronjob ENV=dev-west NAMESPACE=lm-serve-dev-west HELM_RELEASE=lm-serve-dev-west PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 ```

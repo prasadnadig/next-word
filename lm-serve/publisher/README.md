@@ -1,4 +1,4 @@
-# Script B Publisher Guide
+# Model Catalog Publisher Guide
 
 This module packages a Python 3.12.12 model publisher that reads the shared model catalog and pushes artifacts to S3-compatible object storage using staging + manifest promotion.
 

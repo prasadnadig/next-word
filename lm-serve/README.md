@@ -14,15 +14,15 @@ This directory provides a clean, modular baseline for model publication and vLLM
   - `values.sample-env.models.yaml`: Example model list override values for `sample-env`.
 
 - `deploy/`
-  - `deploy_lm_serve_catalog.sh`: Script A. Model reconciler script that reconciles catalog entries into one StatefulSet per model plus shared Envoy edge.
+  - `deploy_lm_serve_catalog.sh`: Model deployment reconciler that reconciles catalog entries into one StatefulSet per model plus shared Envoy edge.
   - `generate_test_auth_materials.sh`: Helper for initial API key/JWT bootstrap for small-team testing.
   - `smoke_test_lm_serve_catalog.sh`: End-to-end smoke tester for all enabled models using API key/JWT.
-  - `Dockerfile`: Optional in-cluster model reconciler image build for Script A.
+  - `Dockerfile`: Optional in-cluster runtime image for the model deployment reconciler.
   - `README-install.md`: Detailed cluster installation and operations guide.
   - `README-inference-usage.md`: End-user usage guide (API key/JWT, request examples).
 
 - `publisher/`
-  - `publish_model_catalog.py`: Script B model publisher. Downloads source artifacts and publishes with staging + manifest promotion.
+  - `publish_model_catalog.py`: Model catalog publisher. Downloads source artifacts and publishes with staging + manifest promotion.
   - `Dockerfile`: Hardened Python 3.12.12 runtime image.
   - `requirements.txt`: Script dependencies.
   - `README.md`: Build, deploy, and cron operation guide.
@@ -65,7 +65,7 @@ make happy-path API_KEY=<api-key>
 Render templates locally:
 
 ```bash
-make helm-template ENV=sample-env
+make render-helm-template ENV=sample-env
 ```
 
 Apply chart with an override file:
@@ -77,16 +77,16 @@ make helm-upgrade-base ENV=sample-env
 Override individual values from CLI:
 
 ```bash
-make apply-model-reconciler DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-model-reconciler MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 make apply-model-publisher-cronjob PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 ```
 
 For continuous in-cluster model reconciliation and periodic model publishing, build/push images and apply manifests:
 
 ```bash
-make build-deployer-image DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make push-deployer-image DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make apply-model-reconciler ENV=sample-env DEPLOYER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make build-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make push-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-model-reconciler ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 
 make build-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 make push-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
