@@ -1,0 +1,103 @@
+{{- if .Values.modelReconciler.enabled }}
+{{- $routeEnvSegment := .Release.Namespace -}}
+{{- $aliasMap := .Values.routeConfig.namespaceEnvSegmentMap | default dict -}}
+{{- if hasKey $aliasMap .Release.Namespace -}}
+{{- $routeEnvSegment = index $aliasMap .Release.Namespace -}}
+{{- end -}}
+{{- $routeEnvSegment = regexReplaceAll "[^a-z0-9-]+" (lower $routeEnvSegment) "-" -}}
+{{- $routeEnvSegment = regexReplaceAll "^-+" $routeEnvSegment "" -}}
+{{- $routeEnvSegment = regexReplaceAll "-+$" $routeEnvSegment "" -}}
+{{- if eq $routeEnvSegment "" -}}
+{{- fail "routeConfig namespaceEnvSegmentMap produced an empty env segment" -}}
+{{- end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.modelReconciler.serviceAccountName }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.modelReconciler.roleName }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "services", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.modelReconciler.roleName }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.modelReconciler.serviceAccountName }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.modelReconciler.roleName }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.modelReconciler.name }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+spec:
+  backoffLimit: {{ .Values.modelReconciler.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.modelReconciler.name }}
+{{ include "lm-serve-models.labels" . | indent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.modelReconciler.serviceAccountName }}
+      restartPolicy: Never
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: model-reconciler
+          image: {{ .Values.modelReconciler.image }}
+          imagePullPolicy: {{ .Values.modelReconciler.imagePullPolicy }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          args:
+            - --namespace
+            - {{ .Release.Namespace }}
+            - --catalog-configmap
+            - {{ .Values.modelReconciler.args.catalogConfigMapName }}
+            - --catalog-key
+            - {{ .Values.modelReconciler.args.catalogKey }}
+            - --route-configmap
+            - {{ .Values.modelReconciler.args.routeConfigMapName }}
+            - --route-key
+            - {{ .Values.modelReconciler.args.routeConfigKey }}
+            - --route-env-segment
+            - {{ $routeEnvSegment | quote }}
+            - --model-service-type
+            - {{ .Values.modelReconciler.args.modelServiceType }}
+            - --watch-interval-sec
+            - {{ .Values.modelReconciler.args.watchIntervalSec | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

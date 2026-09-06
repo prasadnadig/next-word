@@ -1,0 +1,81 @@
+catalog:
+  # Enable catalog ConfigMap generation from this chart.
+  # true  => creates catalog ConfigMap payload consumed by model reconciler.
+  # false => chart does not manage catalog ConfigMap.
+  enabled: true
+  name: lm-serve-model-catalog
+  key: models.yaml
+  storage:
+    # Object storage location where model artifacts are published.
+    # bucket/endpoint/region are included in generated catalog payload.
+    bucket: REPLACE_ME_BUCKET
+    endpoint: https://us-ord-1.linodeobjects.com
+    region: us-east-1
+  # Optional inline model list for manual workflows.
+  # In most deployments, publisher chart owns model intent and this remains empty.
+  models: []
+
+validation:
+  # Catalog validation mode:
+  # false => allow empty catalog (useful for bootstrap before first publish).
+  # true  => fail route generation when no models are enabled.
+  rejectEmptyCatalog: false
+
+modelReconciler:
+  # Reconciler execution mode:
+  # true  => run in-cluster Job to reconcile model catalog into runtime resources.
+  # false => do not run Job; use deploy script or external controller instead.
+  enabled: true
+  name: vllm-catalog-model-reconciler
+  serviceAccountName: vllm-catalog-model-reconciler
+  roleName: vllm-catalog-model-reconciler
+  backoffLimit: 0
+  image: REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
+  imagePullPolicy: IfNotPresent
+  args:
+    catalogConfigMapName: lm-serve-model-catalog
+    catalogKey: models.yaml
+    # Service exposure for model services created by reconciler.
+    # - ClusterIP: internal-only traffic via cluster networking.
+    # - NodePort: expose via node IP and fixed port range.
+    # - LoadBalancer: cloud/load balancer exposure for external clients.
+    modelServiceType: LoadBalancer
+    routeConfigMapName: lm-serve-envoy-routes
+    routeConfigKey: routes.yaml
+    # Reconcile interval when running watch mode.
+    # Lower values detect catalog changes faster but increase API server churn.
+    watchIntervalSec: "60"
+
+    # Service type examples:
+    # modelServiceType: ClusterIP
+    # modelServiceType: NodePort
+    # modelServiceType: LoadBalancer
+
+  # Reconciler mode examples:
+  # 1) In-cluster managed reconciliation
+  # enabled: true
+  # image: registry.example.com/vllm-catalog-deployer:0.1.0
+
+  # 2) External or manual reconciliation flow
+  # enabled: false
+
+routeConfig:
+  # Shared route ConfigMap contract read by platform Envoy chart.
+  configMapName: lm-serve-envoy-routes
+  key: routes.yaml
+  # Route URL prefix strategy is namespaced-only:
+  # /m/<env-segment>/<model>/
+  #
+  # Default env segment source:
+  # - Helm release namespace (sanitized to lowercase [a-z0-9-]).
+  #
+  # Optional namespace-to-alias mapping:
+  # - Use when you want a stable shorter alias independent of namespace naming.
+  # - Key: namespace name
+  # - Value: env segment alias used in route prefix
+  namespaceEnvSegmentMap: {}
+
+  # Example mappings:
+  # namespaceEnvSegmentMap:
+  #   lm-serve-dev-west: dev
+  #   lm-serve-staging-east: stg

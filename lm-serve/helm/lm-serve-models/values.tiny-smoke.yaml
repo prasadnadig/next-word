@@ -1,0 +1,56 @@
+# tiny-smoke environment profile
+#
+# Purpose:
+# - Consumer-side deployment profile for the model-runtime chart.
+# - The source-of-truth model catalog is owned by the publisher under
+#   `lm-serve-publisher/catalogs/*.yaml`.
+# - This file configures storage and runtime settings for the consuming environment.
+#
+# The actual model list and serving definitions live in publisher-managed catalog
+# files instead of here.
+#
+# Historical note:
+# - Provide a very low-footprint environment profile for smoke-testing a new
+#   inference service where minimal model size matters more than output quality.
+#
+# Why this fits:
+# - Paired with the publisher-managed tiny-smoke catalog, this profile enables
+#   two of the smallest practical Hugging Face GPT-2 checkpoints for smoke
+#   validation of wiring, startup, tokenization, and generation behavior.
+#
+# Caveats:
+# - tiny-random-gpt2 is intentionally low quality (random weights); output is
+#   often nonsensical or repetitive. Use it to test robustness, not quality.
+# - Very small models can hide latency/memory issues that appear with realistic
+#   checkpoints. Add a medium-size model later for representative performance.
+# - Keeping modelReconciler enabled is convenient for an automated smoke lane,
+#   but disable it if you only want manual operations.
+
+catalog:
+  storage:
+    # Replace with a dedicated object storage bucket for this smoke environment.
+    bucket: my-tiny-smoke-llm-model-bucket
+    endpoint: https://us-ord-1.linodeobjects.com
+    region: us-east-1
+
+modelReconciler:
+  # true  => chart runs in-cluster reconciliation Job.
+  # false => skip Job and rely on deploy script or external controller.
+  enabled: true
+  image: registry.example.com/vllm-catalog-deployer:0.1.0
+  args:
+    # Exposure mode for reconciler-created model services.
+    # ClusterIP keeps model endpoints internal.
+    # NodePort or LoadBalancer enables external reachability.
+    modelServiceType: LoadBalancer
+    # Reconciliation cadence in watch mode.
+    # Short interval gives faster rollout reaction but more cluster API traffic.
+    watchIntervalSec: "60"
+
+  # Alternative reconciliation mode examples:
+  # enabled: false
+
+  # Alternative model service exposure examples:
+  # args:
+  #   modelServiceType: ClusterIP
+  #   watchIntervalSec: "120"

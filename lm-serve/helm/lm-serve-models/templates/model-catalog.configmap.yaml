@@ -1,0 +1,26 @@
+{{- if .Values.catalog.enabled }}
+{{- $models := .Values.catalog.models | default (list) }}
+{{- $rejectEmptyCatalog := true }}
+{{- if hasKey .Values.validation "rejectEmptyCatalog" }}
+{{- $rejectEmptyCatalog = .Values.validation.rejectEmptyCatalog }}
+{{- end }}
+{{- if and $rejectEmptyCatalog (eq (len $models) 0) }}
+{{- fail "catalog.models must be non-empty when validation.rejectEmptyCatalog=true" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.catalog.name }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+data:
+  {{ .Values.catalog.key }}: |
+    # Cloud-agnostic object storage descriptor. Linode Object Storage is one S3-compatible option.
+    storage:
+      bucket: {{ required "catalog.storage.bucket is required" .Values.catalog.storage.bucket | quote }}
+      endpoint: {{ required "catalog.storage.endpoint is required" .Values.catalog.storage.endpoint | quote }}
+      region: {{ required "catalog.storage.region is required" .Values.catalog.storage.region | quote }}
+
+    models:
+{{ toYaml .Values.catalog.models | nindent 6 }}
+{{- end }}

@@ -6,9 +6,12 @@ This guide is for application developers and testers consuming the deployed serv
 
 Envoy routes each model by URL prefix:
 
-- `http://<VLLM_EDGE>/m/<MODEL_NAME>/v1/chat/completions`
-- `http://<VLLM_EDGE>/m/<MODEL_NAME>/v1/completions`
-- `http://<VLLM_EDGE>/m/<MODEL_NAME>/v1/embeddings`
+- `http://<VLLM_EDGE>/m/<ENV_SEGMENT>/<MODEL_NAME>/v1/chat/completions`
+- `http://<VLLM_EDGE>/m/<ENV_SEGMENT>/<MODEL_NAME>/v1/completions`
+- `http://<VLLM_EDGE>/m/<ENV_SEGMENT>/<MODEL_NAME>/v1/embeddings`
+
+`<ENV_SEGMENT>` defaults to the namespace name and can be overridden with
+`routeConfig.namespaceEnvSegmentMap`.
 
 Example model names are those from `models.yaml` in the catalog ConfigMap.
 
@@ -31,7 +34,7 @@ Both are validated by the Envoy auth service.
 API key example:
 
 ```bash
-curl -sS "http://<VLLM_EDGE>/m/mistral-7b-instruct/v1/chat/completions" \
+curl -sS "http://<VLLM_EDGE>/m/default/mistral-7b-instruct/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <YOUR_API_KEY>" \
   -d '{
@@ -47,7 +50,7 @@ curl -sS "http://<VLLM_EDGE>/m/mistral-7b-instruct/v1/chat/completions" \
 JWT example:
 
 ```bash
-curl -sS "http://<VLLM_EDGE>/m/mistral-7b-instruct/v1/chat/completions" \
+curl -sS "http://<VLLM_EDGE>/m/default/mistral-7b-instruct/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_JWT>" \
   -d '{
@@ -68,7 +71,7 @@ Python example:
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://<VLLM_EDGE>/m/mistral-7b-instruct/v1",
+    base_url="http://<VLLM_EDGE>/m/default/mistral-7b-instruct/v1",
     api_key="<YOUR_API_KEY>",
 )
 

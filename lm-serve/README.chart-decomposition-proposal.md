@@ -68,7 +68,20 @@ authz:
 
 Rules:
 - If `mode=internal`, endpoint host should default to the auth chart service.
-- If `mode=external`, all endpoint fields must be explicitly set.
+- If `mode=external`, endpoint host should be an externally reachable DNS name or load balancer address, and the platform chart should use that host verbatim instead of Kubernetes service DNS.
+- If `mode=external`, the token Secret may be created by the chart for local/testing use or supplied by the user as an existing Secret via `existingSecretName`.
+
+Decision matrix:
+
+| Need | authz.mode | endpoint.host | endpoint.namespace | endpoint.scheme | bearerTokenSecret choice |
+|---|---|---|---|---|---|
+| Auth in same namespace | `internal` | K8s Service name | workload namespace | `http` | not used |
+| Auth in different namespace, same cluster | `internal` | K8s Service name | auth namespace | `http` | not used |
+| Auth in different cluster | `external` | routable DNS/LB host | empty string | `https` (recommended) | create Secret or use existing Secret |
+
+Mutual exclusivity for external bearer token secret:
+- Option A: `create=true` and `existingSecretName=""`
+- Option B: `create=false` and `existingSecretName="<precreated-secret>"`
 
 ### Contract 2: Envoy route config source
 `lm-serve-platform` mounts a named ConfigMap; `lm-serve-models` writes route data to it.

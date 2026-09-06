@@ -1,8 +1,13 @@
 authService:
+  # Enable or disable auth service deployment from this chart.
+  # true  => renders Deployment and Service.
+  # false => chart will not run auth service; use this only if another auth service already exists.
   enabled: true
   name: lm-serve-auth-service
   image: REPLACE_ME_REGISTRY/lm-serve-auth-service:0.1.0
   imagePullPolicy: IfNotPresent
+  # How often the auth service reloads keys from mounted Secret files.
+  # Lower values rotate secrets faster but add file read overhead.
   secretReloadIntervalSec: 5
   replicaCount: 2
   service:
@@ -16,10 +21,51 @@ authService:
       memory: 256Mi
 
 secrets:
+  # Secret mode controls how credentials are provided to auth service.
+  # - create: chart creates a Secret using secrets.apiKeys and secrets.jwtSecret.
+  # - existingSecret: chart expects an already-created Secret named existingSecretName.
+  # Note: externalRef block is metadata only in current chart version and does not create resources.
   mode: existingSecret
+
+  # Name of Secret mounted by auth service at runtime.
+  # - mode=create: this is the name of Secret created by the chart.
+  # - mode=existingSecret: this must already exist in namespace.
   existingSecretName: lm-serve-auth-secrets
+
+  # Keys inside the Secret that the auth service reads.
+  # - apiKeys: multi-line file where each line is a valid API key.
+  # - jwtSecret: HS256 secret string used for bearer JWT verification.
   keys:
     apiKeys: api_keys.txt
     jwtSecret: jwt_hs256_secret
+
+  # Used only when mode=create.
+  # Keep at least one API key for non-JWT clients.
+  apiKeys: []
+
+  # Used only when mode=create.
+  # Empty string is invalid when mode=create.
+  jwtSecret: ""
+
+  # Reserved for future external-secret integration.
+  # Current templates do not consume this block directly.
   externalRef:
     enabled: false
+
+  # Option A example: chart-managed secret creation
+  # mode: create
+  # existingSecretName: lm-serve-auth-secrets
+  # keys:
+  #   apiKeys: api_keys.txt
+  #   jwtSecret: jwt_hs256_secret
+  # apiKeys:
+  #   - team-dev-key-1
+  #   - team-dev-key-2
+  # jwtSecret: replace-with-strong-hs256-secret
+
+  # Option B example: use an existing pre-provisioned secret
+  # mode: existingSecret
+  # existingSecretName: prod-auth-secrets
+  # keys:
+  #   apiKeys: api_keys.txt
+  #   jwtSecret: jwt_hs256_secret

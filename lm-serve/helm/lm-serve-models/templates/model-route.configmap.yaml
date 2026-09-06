@@ -1,0 +1,49 @@
+{{- if .Values.routeConfig.configMapName }}
+{{- $envSegment := .Release.Namespace -}}
+{{- $aliasMap := .Values.routeConfig.namespaceEnvSegmentMap | default dict -}}
+{{- if hasKey $aliasMap .Release.Namespace -}}
+{{- $envSegment = index $aliasMap .Release.Namespace -}}
+{{- end -}}
+{{- $envSegment = regexReplaceAll "[^a-z0-9-]+" (lower $envSegment) "-" -}}
+{{- $envSegment = regexReplaceAll "^-+" $envSegment "" -}}
+{{- $envSegment = regexReplaceAll "-+$" $envSegment "" -}}
+{{- if eq $envSegment "" -}}
+{{- fail "routeConfig namespaceEnvSegmentMap produced an empty env segment" -}}
+{{- end -}}
+{{- $routes := list }}
+{{- range .Values.catalog.models }}
+{{- $enabled := true -}}
+{{- if hasKey . "enabled" }}
+{{- $enabled = .enabled -}}
+{{- end }}
+{{- if $enabled }}
+{{- $modelK8s := include "lm-serve-models.modelK8sName" .name -}}
+{{- $servicePort := 8000 -}}
+{{- if .serving.port }}
+{{- $servicePort = .serving.port -}}
+{{- end }}
+{{- $prefix := printf "/m/%s/%s/" $envSegment .name -}}
+{{- $route := dict "prefix" $prefix "cluster" (printf "vllm-%s" $modelK8s) "serviceHost" (printf "vllm-%s.%s.svc.cluster.local" $modelK8s $.Release.Namespace) "servicePort" $servicePort -}}
+{{- $routes = append $routes $route -}}
+{{- end }}
+{{- end }}
+{{- if and (eq (len $routes) 0) (hasKey .Values "validation") (hasKey .Values.validation "rejectEmptyCatalog") (.Values.validation.rejectEmptyCatalog) }}
+{{- fail "routeConfig requires at least one enabled model" }}
+{{- end }}
+{{- if gt (len $routes) 0 }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.routeConfig.configMapName }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+    lm-serve/model-route-source: "true"
+    lm-serve.ai/route-source-owner: lm-serve-models
+data:
+  {{ .Values.routeConfig.key }}: |
+    routes:
+{{ toYaml $routes | nindent 6 }}
+  routes.json: |
+{{ toJson $routes | nindent 4 }}
+{{- end }}
+{{- end }}

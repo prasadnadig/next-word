@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.envoy.service.name }}
+  labels:
+{{ include "lm-serve-platform.labels" . | indent 4 }}
+spec:
+  type: {{ .Values.envoy.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ .Values.envoy.name }}
+  ports:
+  - name: http
+    port: {{ .Values.envoy.service.port }}
+    targetPort: {{ .Values.envoy.service.targetPort }}

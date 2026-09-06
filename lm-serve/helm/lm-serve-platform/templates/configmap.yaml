@@ -1,0 +1,158 @@
+{{- $allRoutes := .Values.envoy.routes | default (list) -}}
+{{- $seenPrefixes := dict -}}
+{{- $seenClusters := dict -}}
+{{- $uniqueClusterRoutes := list -}}
+{{- range $idx, $r := $allRoutes -}}
+  {{- if not (hasKey $r "prefix") -}}
+    {{- fail (printf "route at index %d is missing required field: prefix" $idx) -}}
+  {{- end -}}
+  {{- if not (hasKey $r "cluster") -}}
+    {{- fail (printf "route at index %d is missing required field: cluster" $idx) -}}
+  {{- end -}}
+  {{- if not (hasKey $r "serviceHost") -}}
+    {{- fail (printf "route at index %d is missing required field: serviceHost" $idx) -}}
+  {{- end -}}
+  {{- $prefix := printf "%v" $r.prefix -}}
+  {{- $cluster := printf "%v" $r.cluster -}}
+  {{- $endpoint := printf "%v:%v" $r.serviceHost ($r.servicePort | default 8000) -}}
+  {{- if hasKey $seenPrefixes $prefix -}}
+    {{- fail (printf "duplicate route prefix detected: %s. Ensure model route prefixes are unique across static and discovered sources" $prefix) -}}
+  {{- end -}}
+  {{- $_ := set $seenPrefixes $prefix true -}}
+  {{- if hasKey $seenClusters $cluster -}}
+    {{- $existingEndpoint := index $seenClusters $cluster -}}
+    {{- if ne $existingEndpoint $endpoint -}}
+      {{- fail (printf "cluster name conflict for %s: endpoints %s and %s. Ensure unique cluster names across route sources" $cluster $existingEndpoint $endpoint) -}}
+    {{- end -}}
+  {{- else -}}
+    {{- $_ := set $seenClusters $cluster $endpoint -}}
+    {{- $uniqueClusterRoutes = append $uniqueClusterRoutes $r -}}
+  {{- end -}}
+{{- end -}}
+{{- $hasModelRoutes := gt (len $allRoutes) 0 -}}
+{{- $authzNamespace := .Values.authz.endpoint.namespace | default "" -}}
+{{- $authzAddress := .Values.authz.endpoint.host -}}
+{{- if and (ne .Values.authz.mode "external") $authzNamespace -}}
+{{- $authzAddress = printf "%s.%s.svc.cluster.local" .Values.authz.endpoint.host $authzNamespace -}}
+{{- end -}}
+{{- $authzScheme := .Values.authz.endpoint.scheme | default "http" -}}
+{{- $authzUri := printf "%s://%s:%v" $authzScheme $authzAddress .Values.authz.endpoint.port -}}
+{{- $authzBearerTokenEnv := "AUTHZ_BEARER_TOKEN" -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.envoy.name }}-config
+  labels:
+{{ include "lm-serve-platform.labels" . | indent 4 }}
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+        - name: ingress_listener
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: {{ .Values.envoy.service.targetPort }}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                        - name: lm_serve_apps
+                          domains: ["*"]
+                          routes:
+{{- range $allRoutes }}
+                            - match:
+                                prefix: {{ .prefix | quote }}
+                              route:
+                                cluster: {{ .cluster | quote }}
+                                prefix_rewrite: {{ .prefixRewrite | default "/" | quote }}
+{{- end }}
+                            - match:
+                                path: {{ .Values.envoy.health.path | quote }}
+                              direct_response:
+                                status: 200
+                                body:
+                                  inline_string: "ok"
+{{- if not $hasModelRoutes }}
+                            - match:
+                                prefix: "/"
+                              direct_response:
+                                status: 503
+                                body:
+                                  inline_string: "lm-serve platform is up, but no model routes are configured yet"
+{{- end }}
+                    http_filters:
+                      - name: envoy.filters.http.ext_authz
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                          transport_api_version: V3
+                          failure_mode_allow: false
+                          with_request_body:
+                            max_request_bytes: 8192
+                            allow_partial_message: true
+                          http_service:
+                            server_uri:
+                              uri: {{ $authzUri | quote }}
+                              cluster: authz_cluster
+                              timeout: {{ .Values.authz.endpoint.timeout | quote }}
+                            path_prefix: {{ .Values.authz.endpoint.pathPrefix | quote }}
+                            authorization_request:
+                              allowed_headers:
+                                patterns:
+{{- range .Values.authz.allowedHeaders }}
+                                  - exact: {{ . | quote }}
+{{- end }}
+{{- if eq .Values.authz.mode "external" }}
+                              headers_to_add:
+                                - header:
+                                    key: authorization
+                                    value: {{ printf "Bearer %%ENVIRONMENT(%s)%%" $authzBearerTokenEnv | quote }}
+{{- end }}
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: authz_cluster
+          type: STRICT_DNS
+          connect_timeout: 2s
+{{- if eq $authzScheme "https" }}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              sni: {{ $authzAddress | quote }}
+{{- end }}
+          load_assignment:
+            cluster_name: authz_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: {{ $authzAddress | quote }}
+                          port_value: {{ .Values.authz.endpoint.port }}
+{{- range $uniqueClusterRoutes }}
+        - name: {{ .cluster | quote }}
+          type: STRICT_DNS
+          connect_timeout: 2s
+          lb_policy: RING_HASH
+          load_assignment:
+            cluster_name: {{ .cluster | quote }}
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: {{ .serviceHost | quote }}
+                          port_value: {{ .servicePort | default 8000 }}
+{{- end }}
+      admin:
+        address:
+          socket_address:
+            address: 127.0.0.1
+            port_value: {{ .Values.envoy.admin.port }}

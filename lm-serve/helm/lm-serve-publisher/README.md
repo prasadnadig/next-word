@@ -26,6 +26,45 @@ The base [values.yaml](values.yaml) is the canonical registry for all publisher 
 
 Each catalog entry supports an `enabled` flag. The publisher renders and publishes only the entries where `enabled` is true. This lets you disable a catalog by env without removing its metadata or source file.
 
+## Quickstart: Multi-option Settings
+
+### 1) Staging cleanup
+
+```yaml
+publisher:
+	pruneStaging: true # true | false
+```
+
+When to use what:
+- `true`: default for routine operation; removes stale staged artifacts.
+- `false`: keep staged artifacts for debugging or audit workflows.
+
+### 2) Per-environment publish enablement
+
+```yaml
+consumer:
+	catalogs:
+		- env: sample-env
+			enabled: true
+		- env: small-representative
+			enabled: false
+```
+
+Behavior impact:
+- Only enabled catalogs are rendered and passed to publisher runtime.
+- Disabled catalogs remain documented but are not published.
+
+### 3) Disable consumer artifact management
+
+```yaml
+consumer:
+	enabled: false
+```
+
+Behavior impact:
+- Chart skips consumer artifact scaffolding paths.
+- Use only when those artifacts are managed elsewhere.
+
 ## Release example
 
 ```bash

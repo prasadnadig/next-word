@@ -14,6 +14,9 @@ readonly MANAGED_BY_LABEL="vllm-catalog-deployer"
 NAMESPACE="lm-serve"
 CATALOG_CONFIGMAP="lm-serve-model-catalog"
 CATALOG_KEY="models.yaml"
+ROUTE_CONFIGMAP="lm-serve-envoy-routes"
+ROUTE_KEY="routes.yaml"
+ROUTE_ENV_SEGMENT=""
 MODEL_SERVICE_TYPE="LoadBalancer"
 VLLM_IMAGE_DEFAULT="vllm/vllm-openai:v0.8.5"
 INIT_SYNC_IMAGE="amazon/aws-cli:2.22.14"
@@ -66,6 +69,10 @@ OPTIONS:
   -n, --namespace NAME            Namespace to deploy into (default: ${NAMESPACE})
       --catalog-configmap NAME    ConfigMap containing catalog (default: ${CATALOG_CONFIGMAP})
       --catalog-key KEY           Data key in ConfigMap (default: ${CATALOG_KEY})
+      --route-configmap NAME      ConfigMap for generated model routes (default: ${ROUTE_CONFIGMAP})
+      --route-key KEY             Data key for generated model routes YAML (default: ${ROUTE_KEY})
+      --route-env-segment NAME    Optional route env segment for /m/<env>/<model>/ prefixes
+                  (default: namespace name)
       --model-service-type TYPE   Model Service type (default: ${MODEL_SERVICE_TYPE})
                                   Allowed: LoadBalancer, NodePort, ClusterIP
       --vllm-image IMAGE          Default vLLM image (default: ${VLLM_IMAGE_DEFAULT})
@@ -90,6 +97,9 @@ parse_args() {
       -n|--namespace) NAMESPACE="$2"; shift 2 ;;
       --catalog-configmap) CATALOG_CONFIGMAP="$2"; shift 2 ;;
       --catalog-key) CATALOG_KEY="$2"; shift 2 ;;
+      --route-configmap) ROUTE_CONFIGMAP="$2"; shift 2 ;;
+      --route-key) ROUTE_KEY="$2"; shift 2 ;;
+      --route-env-segment) ROUTE_ENV_SEGMENT="$2"; shift 2 ;;
       --model-service-type) MODEL_SERVICE_TYPE="$2"; shift 2 ;;
       --vllm-image) VLLM_IMAGE_DEFAULT="$2"; shift 2 ;;
       --init-sync-image) INIT_SYNC_IMAGE="$2"; shift 2 ;;
@@ -138,6 +148,22 @@ require_tools() {
   [[ "${WATCH_INTERVAL_SEC}" =~ ^[0-9]+$ ]] || fatal "--watch-interval-sec must be a non-negative integer"
 }
 
+sanitize_name() {
+  local raw="$1"
+  local out
+  out="$(echo "${raw}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//')"
+  echo "${out}"
+}
+
+bool_from_catalog() {
+  local raw
+  raw="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+  case "${raw}" in
+    true|1|yes|on) echo "true" ;;
+    *) echo "false" ;;
+  esac
+}
+
 ensure_namespace() {
   local kf; kf="$(kflags)"
   # shellcheck disable=SC2086
@@ -157,22 +183,60 @@ fetch_catalog_to_file() {
   payload=$(kubectl ${kf} -n "${NAMESPACE}" get configmap "${CATALOG_CONFIGMAP}" \
     -o "jsonpath={.data.${escaped_key}}" 2>/dev/null || true)
 
-kind: Service
+  [[ -n "${payload}" ]] || fatal "Catalog ConfigMap ${CATALOG_CONFIGMAP} missing key ${CATALOG_KEY} in namespace ${NAMESPACE}"
+  printf '%s\n' "${payload}" > "${dst}"
+}
+
+render_and_apply_route_configmap() {
+  local catalog_file="$1"
+  local tmpdir="$2"
+  local route_env_segment="$3"
+
+  local route_yaml="${tmpdir}/routes.yaml"
+  local route_json
+  local out="${tmpdir}/route-configmap.yaml"
+
+  {
+    echo "routes:"
+    local model_name enabled model_k8s service_port
+    while IFS= read -r model_name; do
+      [[ -n "${model_name}" ]] || continue
+
+      enabled="$(yq -r ".models[] | select(.name == \"${model_name}\") | (.enabled // true)" "${catalog_file}")"
+      if [[ "$(bool_from_catalog "${enabled}")" != "true" ]]; then
+        continue
+      fi
+
+      model_k8s="$(sanitize_name "${model_name}")"
+      service_port="$(yq -r ".models[] | select(.name == \"${model_name}\") | (.serving.port // 8000)" "${catalog_file}")"
+
+      cat <<EOF
+  - prefix: /m/${route_env_segment}/${model_name}/
+    cluster: vllm-${model_k8s}
+    serviceHost: vllm-${model_k8s}.${NAMESPACE}.svc.cluster.local
+    servicePort: ${service_port}
+EOF
+    done < <(yq -r '.models[].name' "${catalog_file}")
+  } > "${route_yaml}"
+
+  route_json="$(yq -o=json '.' "${route_yaml}")"
+
+  cat > "${out}" <<EOF
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: vllm-edge
+  name: ${ROUTE_CONFIGMAP}
   namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/managed-by: ${MANAGED_BY_LABEL}
-    app.kubernetes.io/component: edge
-    app.kubernetes.io/name: vllm-envoy
-spec:
-  type: ${MODEL_SERVICE_TYPE}
-  selector:
-    app.kubernetes.io/name: vllm-envoy
-  ports:
-  - name: http
-    port: 80
-    targetPort: 8080
+    app.kubernetes.io/component: model-runtime
+    lm-serve/model-route-source: "true"
+    lm-serve.ai/route-source-owner: lm-serve-models
+data:
+  ${ROUTE_KEY}: |
+$(sed 's/^/    /' "${route_yaml}")
+  routes.json: |
+$(echo "${route_json}" | sed 's/^/    /')
 EOF
 
   run_apply "${out}"
@@ -488,6 +552,12 @@ reconcile_once() {
   [[ "${model_count}" =~ ^[0-9]+$ ]] || fatal "Catalog is invalid: models must be a list"
 
   local desired_names=""
+  local route_env_segment="${ROUTE_ENV_SEGMENT}"
+  if [[ -z "${route_env_segment}" ]]; then
+    route_env_segment="${NAMESPACE}"
+  fi
+  route_env_segment="$(sanitize_name "${route_env_segment}")"
+  [[ -n "${route_env_segment}" ]] || fatal "Route env segment resolved to empty string"
 
   while IFS= read -r model_name; do
     [[ -n "${model_name}" ]] || continue
@@ -505,8 +575,11 @@ reconcile_once() {
     desired_names+="vllm-${model_k8s}"$'\n'
   done < <(yq -r '.models[].name' "${catalog_file}")
 
-  [[ -n "${desired_names}" ]] || fatal "No enabled models found in catalog"
+  if [[ -z "${desired_names}" ]]; then
+    warn "No enabled models found in catalog; applying empty route set and cleaning stale runtimes"
+  fi
 
+  render_and_apply_route_configmap "${catalog_file}" "${tmpdir}" "${route_env_segment}"
   cleanup_removed_models "${desired_names}"
 
   success "Reconciliation completed for namespace ${NAMESPACE}"

@@ -11,6 +11,9 @@ AUTH_NAMESPACE ?= $(if $(ENV),$(ENV),$(NAMESPACE))
 AUTH_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-auth-service:0.1.0
 MODEL_RECONCILER_IMAGE ?= REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 PUBLISHER_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
+ROUTE_AGGREGATOR_IMAGE_REPOSITORY ?= REPLACE_ME_REGISTRY/lm-serve-route-aggregator
+ROUTE_AGGREGATOR_IMAGE_TAG ?= 0.1.0
+ROUTE_AGGREGATOR_IMAGE ?= $(ROUTE_AGGREGATOR_IMAGE_REPOSITORY):$(ROUTE_AGGREGATOR_IMAGE_TAG)
 
 # Configure Helm chart wiring and layered values model.
 AUTH_HELM_RELEASE ?= lm-serve-auth
@@ -31,6 +34,8 @@ PUBLISHER_HELM_VALUES ?= -f $(PUBLISHER_HELM_CHART)/values.yaml
 
 ENV ?=
 HELM_EXTRA_ARGS ?=
+FORCE ?= false
+PUBLISH_IF_MISSING ?= false
 
 # Configure auth and smoke-test inputs.
 API_KEY ?=
@@ -48,7 +53,7 @@ help:
 	@echo "  make apply-base ENV=sample-env"
 	@echo "    done: install auth, platform, and models charts; disable the model reconciler Job for the base install"
 	@echo "    done+: apply namespace-scoped example Secrets required by auth/object-storage workflows"
-	@echo "  make deploy-once"
+	@echo "  make apply-serve-model"
 	@echo "    done: reconcile catalog once; create/update model StatefulSets, related Services, and route data"
 	@echo "  make generate-auth-materials"
 	@echo "    done: generate bootstrap API key/JWT materials for small-team validation"
@@ -58,9 +63,15 @@ help:
 	@echo "    done: validate edge auth + baseline inference for all enabled models via JWT flow"
 	@echo "  make smoke-test-all API_KEY=<k> JWT_TOKEN=<t>"
 	@echo "    done: validate all configured auth paths and baseline inference for all enabled models"
-	@echo "  make happy-path ..."
-	@echo "    done: run [apply-base] -> [deploy-once] -> [smoke-test-api-key|smoke-test-jwt|smoke-test-all]"
-	@echo "    done+: produces a validated baseline LM Serve deployment from split charts + catalog + auth test"
+	@echo "  make happy-build ENV=sample-env"
+	@echo "    done: render all Helm charts and build all local Docker images required by LM Serve components"
+	@echo "  make happy-publish"
+	@echo "    done: push all LM Serve Docker images to their configured registries; set PUBLISH_IF_MISSING=true to skip images already present"
+	@echo "  make happy-release ..."
+	@echo "    done: run [happy-build] -> [happy-publish] -> [happy-apply] as a single release workflow"
+	@echo "  make happy-apply ..."
+	@echo "    done: run [apply-base] -> [apply-route-aggregator] -> [apply-model-reconciler] -> [apply-serve-model] -> [smoke-test-*]"
+	@echo "    done+: installs required software to the target cluster in dependency-safe order and validates edge inference"
 	@echo ""
 	@echo "Continuous reconciliation and automation options:"
 	@echo "  make deploy-watch-local"
@@ -77,6 +88,12 @@ help:
 	@echo "    done: deploy or update auth chart with the selected auth image"
 	@echo "  make apply-model-reconciler ENV=<env> MODEL_RECONCILER_IMAGE=<img>"
 	@echo "    done: enable in-cluster model reconciliation and configure the reconciler image used by the Job"
+	@echo "  make build-route-aggregator-image"
+	@echo "    done: build standalone lm-serve-platform route-aggregator controller image"
+	@echo "  make push-route-aggregator-image"
+	@echo "    done: push standalone route-aggregator controller image to the specified container registry"
+	@echo "  make apply-route-aggregator ROUTE_AGGREGATOR_IMAGE_REPOSITORY=<repo> ROUTE_AGGREGATOR_IMAGE_TAG=<tag>"
+	@echo "    done: enable platform live route updates and set the route-aggregator controller image repository and tag"
 	@echo "  make build-model-publisher-image"
 	@echo "    done: build model catalog publisher image"
 	@echo "  make push-model-publisher-image"
@@ -99,6 +116,10 @@ help:
 	@echo "    done: select where auth chart is deployed; default follows ENV, override for shared auth"
 	@echo "  AUTH_IMAGE=$(AUTH_IMAGE) MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE)"
 	@echo "    done: set runtime images for auth service, model reconciliation, and model publishing automation"
+	@echo "  ROUTE_AGGREGATOR_IMAGE=$(ROUTE_AGGREGATOR_IMAGE)"
+	@echo "    done: set standalone platform route-aggregator image (build/push/apply-route-aggregator)"
+	@echo "  ROUTE_AGGREGATOR_IMAGE_REPOSITORY=$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY) ROUTE_AGGREGATOR_IMAGE_TAG=$(ROUTE_AGGREGATOR_IMAGE_TAG)"
+	@echo "    done: optionally set route-aggregator image repository and tag independently"
 	@echo "  ENV=<env-name> (required for Helm targets; example: ENV=sample-env)"
 	@echo "    done: select values.<env>.yaml for the consumer-side model chart and the publisher catalog for that env"
 	@echo "  AUTH_HELM_RELEASE=$(AUTH_HELM_RELEASE) PLATFORM_HELM_RELEASE=$(PLATFORM_HELM_RELEASE) MODELS_HELM_RELEASE=$(MODELS_HELM_RELEASE) PUBLISHER_HELM_RELEASE=$(PUBLISHER_HELM_RELEASE)"
@@ -109,6 +130,10 @@ help:
 	@echo "    done: select values.<env>.yaml for the model consumer chart; source catalog intent lives under helm/lm-serve-publisher/catalogs/<env>.yaml"
 	@echo "  HELM_EXTRA_ARGS='$(HELM_EXTRA_ARGS)'"
 	@echo "    done: pass extra Helm flags to chart install/render commands"
+	@echo "  FORCE=$(FORCE)"
+	@echo "    done: when true, bypass target-cluster confirmation for mutating/apply targets"
+	@echo "  PUBLISH_IF_MISSING=$(PUBLISH_IF_MISSING)"
+	@echo "    done: when true, happy-publish skips pushing images that already exist in the registry"
 
 # Validate required local CLI tools.
 .PHONY: check-tools
@@ -142,6 +167,45 @@ require-env:
 	@test -f "$(PUBLISHER_HELM_CHART)/catalogs/$(ENV).yaml" || (echo "Missing $(PUBLISHER_HELM_CHART)/catalogs/$(ENV).yaml; source catalog intent lives under the publisher chart" && exit 1)
 	@test -f "$(AUTH_HELM_CHART)/values.$(ENV).yaml" || (echo "Missing $(AUTH_HELM_CHART)/values.$(ENV).yaml" && exit 1)
 
+.PHONY: push-image-with-policy
+push-image-with-policy: check-docker
+	@if [[ -z "$(IMAGE)" ]]; then echo "Set IMAGE=<repository:tag>"; exit 1; fi
+	@if [[ "$(PUBLISH_IF_MISSING)" =~ ^(1|true|yes|on)$$ ]]; then \
+		if docker manifest inspect "$(IMAGE)" >/dev/null 2>&1; then \
+			echo "Image already exists in registry, skipping push: $(IMAGE)"; \
+		else \
+			docker push "$(IMAGE)"; \
+		fi; \
+	else \
+		docker push "$(IMAGE)"; \
+	fi
+
+.PHONY: confirm-target-cluster
+confirm-target-cluster: check-kubectl
+	@context=$$(kubectl config current-context 2>/dev/null || echo "<unknown>"); \
+	cluster=$$(kubectl config view --minify -o 'jsonpath={.clusters[0].name}' 2>/dev/null || echo "<unknown>"); \
+	server=$$(kubectl config view --minify -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null || echo "<unknown>"); \
+	user=$$(kubectl config view --minify -o 'jsonpath={.users[0].name}' 2>/dev/null || echo "<unknown>"); \
+	default_namespace=$$(kubectl config view --minify -o 'jsonpath={..namespace}' 2>/dev/null || true); \
+	if [[ -z "$$default_namespace" ]]; then default_namespace=default; fi; \
+	echo "Target Kubernetes cluster:"; \
+	echo "  context: $$context"; \
+	echo "  cluster: $$cluster"; \
+	echo "  server: $$server"; \
+	echo "  user: $$user"; \
+	echo "  kubeconfig namespace: $$default_namespace"; \
+	echo "  target namespace: $(NAMESPACE)"; \
+	echo "  auth namespace: $(AUTH_NAMESPACE)"; \
+	if [[ "$(FORCE)" =~ ^(1|true|yes|on)$$ ]]; then \
+		echo "FORCE=true, bypassing confirmation."; \
+		exit 0; \
+	fi; \
+	read -r -p "Proceed against this cluster? [y/N] " confirm; \
+	if [[ ! "$$confirm" =~ ^[Yy]$$ ]]; then \
+		echo "Aborted."; \
+		exit 1; \
+	fi
+
 # Step 1: Bootstrap base chart resources and namespace secrets.
 .PHONY: render-helm-template
 render-helm-template: check-helm require-env
@@ -151,21 +215,23 @@ render-helm-template: check-helm require-env
 	helm template $(PUBLISHER_HELM_RELEASE) $(PUBLISHER_HELM_CHART) -n $(NAMESPACE) $(PUBLISHER_HELM_VALUES) $(HELM_EXTRA_ARGS)
 
 .PHONY: helm-upgrade-base
-helm-upgrade-base: check-helm check-kubectl require-env
+helm-upgrade-base: confirm-target-cluster check-helm check-kubectl require-env
 	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
 	helm upgrade --install $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PLATFORM_HELM_VALUES) --set authz.endpoint.namespace=$(AUTH_NAMESPACE) $(HELM_EXTRA_ARGS)
 	helm upgrade --install $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) --create-namespace $(MODELS_HELM_VALUES) --set modelReconciler.enabled=false $(HELM_EXTRA_ARGS)
 
 .PHONY: apply-base
-apply-base: helm-upgrade-base
+
+apply-base: confirm-target-cluster
+	@$(MAKE) helm-upgrade-base FORCE=true ENV="$(ENV)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" AUTH_IMAGE="$(AUTH_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	kubectl -n $(NAMESPACE) apply -f manifests/secrets.examples.yaml
 	@if [[ "$(AUTH_NAMESPACE)" != "$(NAMESPACE)" ]]; then \
 		kubectl -n $(AUTH_NAMESPACE) apply -f manifests/secrets.examples.yaml; \
 	fi
 
 # Step 2: Reconcile model catalog into running model workloads and services.
-.PHONY: deploy-once
-deploy-once: check-kubectl check-yq
+.PHONY: apply-serve-model
+apply-serve-model: confirm-target-cluster check-kubectl check-yq
 	bash deploy/deploy_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
 	  --catalog-configmap $(CATALOG_CONFIGMAP) \
@@ -173,7 +239,7 @@ deploy-once: check-kubectl check-yq
 	  --model-service-type $(MODEL_SERVICE_TYPE)
 
 .PHONY: deploy-watch-local
-deploy-watch-local: check-kubectl check-yq
+deploy-watch-local: confirm-target-cluster check-kubectl check-yq
 	bash deploy/deploy_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
 	  --catalog-configmap $(CATALOG_CONFIGMAP) \
@@ -206,6 +272,7 @@ smoke-test-jwt: check-kubectl check-yq
 	  --jwt-token "$(JWT_TOKEN)" \
 	  --prompt "$(PROMPT)"
 
+
 .PHONY: smoke-test-all
 smoke-test-all: check-kubectl check-yq
 	@if [[ -z "$(API_KEY)" ]]; then echo "Set API_KEY variable"; exit 1; fi
@@ -218,28 +285,6 @@ smoke-test-all: check-kubectl check-yq
 	  --jwt-token "$(JWT_TOKEN)" \
 	  --prompt "$(PROMPT)"
 
-# Step 4: Compose and run the end-to-end happy path.
-.PHONY: happy-path
-happy-path:
-	@if [[ -z "$(API_KEY)" && -z "$(JWT_TOKEN)" ]]; then echo "Set API_KEY and/or JWT_TOKEN for smoke validation"; exit 1; fi
-	@echo "[1/4] Ensuring namespace and base manifests exist."
-	@echo "      Why: catalog and secrets must exist before reconciliation can render model workloads."
-	@$(MAKE) apply-base
-	@echo "[2/4] Reconciling catalog to create/update vLLM model StatefulSets and Envoy edge."
-	@echo "      Why: this materializes desired model state from the shared ConfigMap."
-	@$(MAKE) deploy-once
-	@echo "[3/4] Running smoke test against enabled models through the edge endpoint."
-	@echo "      Why: validates auth path plus basic inference availability after deployment."
-	@if [[ -n "$(API_KEY)" && -n "$(JWT_TOKEN)" ]]; then \
-		$(MAKE) smoke-test-all API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
-	elif [[ -n "$(API_KEY)" ]]; then \
-		$(MAKE) smoke-test-api-key API_KEY="$(API_KEY)" PROMPT="$(PROMPT)"; \
-	else \
-		$(MAKE) smoke-test-jwt JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
-	fi
-	@echo "[4/4] Happy path complete."
-	@echo "      What next: use deploy-watch-local or apply-model-reconciler for continuous model reconciliation."
-
 # Optional extension: Automate in-cluster model reconciliation.
 .PHONY: build-auth-image
 build-auth-image: check-docker
@@ -250,8 +295,25 @@ push-auth-image: check-docker
 	docker push $(AUTH_IMAGE)
 
 .PHONY: apply-auth-service
-apply-auth-service: check-helm check-kubectl
+apply-auth-service: confirm-target-cluster check-helm check-kubectl
 	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
+
+.PHONY: build-route-aggregator-image
+build-route-aggregator-image: check-docker
+	docker build -t $(ROUTE_AGGREGATOR_IMAGE) route-aggregator
+
+.PHONY: push-route-aggregator-image
+push-route-aggregator-image: check-docker
+	docker push $(ROUTE_AGGREGATOR_IMAGE)
+
+.PHONY: apply-route-aggregator
+apply-route-aggregator: confirm-target-cluster check-helm check-kubectl
+	helm upgrade --install $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PLATFORM_HELM_VALUES) \
+	  --set authz.endpoint.namespace=$(AUTH_NAMESPACE) \
+	  --set routeConfig.liveUpdate.enabled=true \
+	  --set-string routeConfig.liveUpdate.controller.image.repository=$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY) \
+	  --set-string routeConfig.liveUpdate.controller.image.tag=$(ROUTE_AGGREGATOR_IMAGE_TAG) \
+	  $(HELM_EXTRA_ARGS)
 
 # Optional extension: Automate in-cluster model reconciliation.
 .PHONY: build-model-reconciler-image
@@ -263,7 +325,7 @@ push-model-reconciler-image: check-docker
 	docker push $(MODEL_RECONCILER_IMAGE)
 
 .PHONY: apply-model-reconciler
-apply-model-reconciler: check-helm check-kubectl require-env
+apply-model-reconciler: confirm-target-cluster check-helm check-kubectl require-env
 	helm upgrade --install $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) --create-namespace $(MODELS_HELM_VALUES) \
 	  --set modelReconciler.enabled=true \
 	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE) $(HELM_EXTRA_ARGS)
@@ -278,7 +340,72 @@ push-model-publisher-image: check-docker
 	docker push $(PUBLISHER_IMAGE)
 
 .PHONY: apply-model-publisher
-apply-model-publisher: check-helm check-kubectl
+apply-model-publisher: confirm-target-cluster check-helm check-kubectl
 	helm upgrade --install $(PUBLISHER_HELM_RELEASE) $(PUBLISHER_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PUBLISHER_HELM_VALUES) \
 	  --set publisher.enabled=true --set consumer.enabled=true \
 	  --set-string publisher.image=$(PUBLISHER_IMAGE) $(HELM_EXTRA_ARGS)
+
+# High-level orchestration targets.
+.PHONY: happy-build
+happy-build: check-docker check-helm require-env
+	@echo "[1/5] Rendering all Helm charts for ENV=$(ENV)."
+	@$(MAKE) render-helm-template ENV="$(ENV)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@echo "[2/5] Building auth-service image."
+	@$(MAKE) build-auth-image AUTH_IMAGE="$(AUTH_IMAGE)"
+	@echo "[3/5] Building model-reconciler image."
+	@$(MAKE) build-model-reconciler-image MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)"
+	@echo "[4/5] Building route-aggregator image."
+	@$(MAKE) build-route-aggregator-image ROUTE_AGGREGATOR_IMAGE="$(ROUTE_AGGREGATOR_IMAGE)"
+	@echo "[5/5] Building model-publisher image."
+	@$(MAKE) build-model-publisher-image PUBLISHER_IMAGE="$(PUBLISHER_IMAGE)"
+	@echo "Happy build complete."
+
+.PHONY: happy-publish
+happy-publish: check-docker
+	@echo "[1/4] Pushing auth-service image."
+	@$(MAKE) push-image-with-policy IMAGE="$(AUTH_IMAGE)" PUBLISH_IF_MISSING="$(PUBLISH_IF_MISSING)"
+	@echo "[2/4] Pushing model-reconciler image."
+	@$(MAKE) push-image-with-policy IMAGE="$(MODEL_RECONCILER_IMAGE)" PUBLISH_IF_MISSING="$(PUBLISH_IF_MISSING)"
+	@echo "[3/4] Pushing route-aggregator image."
+	@$(MAKE) push-image-with-policy IMAGE="$(ROUTE_AGGREGATOR_IMAGE)" PUBLISH_IF_MISSING="$(PUBLISH_IF_MISSING)"
+	@echo "[4/4] Pushing model-publisher image."
+	@$(MAKE) push-image-with-policy IMAGE="$(PUBLISHER_IMAGE)" PUBLISH_IF_MISSING="$(PUBLISH_IF_MISSING)"
+	@echo "Happy publish complete."
+
+.PHONY: happy-apply
+happy-apply: confirm-target-cluster
+	@if [[ -z "$(API_KEY)" && -z "$(JWT_TOKEN)" ]]; then echo "Set API_KEY and/or JWT_TOKEN for smoke validation"; exit 1; fi
+	@if [[ -z "$(ENV)" ]]; then echo "Set ENV=<env-name> (example: ENV=sample-env)"; exit 1; fi
+	@echo "[1/5] Installing auth, platform, and models baseline charts."
+	@echo "      Why: creates foundational software and required namespace-scoped resources first."
+	@$(MAKE) apply-base FORCE=true ENV="$(ENV)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" AUTH_IMAGE="$(AUTH_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@echo "[2/5] Enabling platform live route update controller."
+	@echo "      Why: route aggregation must be available before ongoing model route changes."
+	@$(MAKE) apply-route-aggregator FORCE=true ENV="$(ENV)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@echo "[3/5] Enabling in-cluster model reconciler job."
+	@echo "      Why: cluster-local reconciliation keeps model runtimes aligned with catalog changes."
+	@$(MAKE) apply-model-reconciler FORCE=true ENV="$(ENV)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@echo "[4/5] Running one immediate reconciliation pass from local workstation."
+	@echo "      Why: bootstraps model workloads immediately instead of waiting for periodic loops."
+	@$(MAKE) apply-serve-model FORCE=true NAMESPACE="$(NAMESPACE)" CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)"
+	@echo "[5/5] Running smoke test against enabled models through the edge endpoint."
+	@echo "      Why: validates auth path plus basic inference availability after deployment."
+	@if [[ -n "$(API_KEY)" && -n "$(JWT_TOKEN)" ]]; then \
+		$(MAKE) smoke-test-all API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
+	elif [[ -n "$(API_KEY)" ]]; then \
+		$(MAKE) smoke-test-api-key API_KEY="$(API_KEY)" PROMPT="$(PROMPT)"; \
+	else \
+		$(MAKE) smoke-test-jwt JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
+	fi
+	@echo "Happy apply complete."
+	@echo "What next: use deploy-watch-local if you also want local-loop reconciliation."
+
+.PHONY: happy-release
+happy-release: confirm-target-cluster
+	@echo "[1/3] Building release artifacts."
+	@$(MAKE) happy-build ENV="$(ENV)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" PUBLISHER_IMAGE="$(PUBLISHER_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@echo "[2/3] Publishing container images."
+	@$(MAKE) happy-publish AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE="$(ROUTE_AGGREGATOR_IMAGE)" PUBLISHER_IMAGE="$(PUBLISHER_IMAGE)" PUBLISH_IF_MISSING="$(PUBLISH_IF_MISSING)"
+	@echo "[3/3] Applying release to target cluster."
+	@$(MAKE) happy-apply FORCE=true ENV="$(ENV)" API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@echo "Happy release complete."

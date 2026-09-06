@@ -1,0 +1,197 @@
+envoy:
+  enabled: true
+  name: vllm-envoy
+  image:
+    repository: envoyproxy/envoy
+    tag: v1.33.2
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  service:
+    name: vllm-edge
+    # Service exposure options:
+    # - ClusterIP: internal-only edge endpoint.
+    # - NodePort: edge reachable via node IP and node port.
+    # - LoadBalancer: cloud/load balancer managed public or private endpoint.
+    type: LoadBalancer
+    port: 80
+    targetPort: 8080
+  admin:
+    port: 9901
+  health:
+    path: /healthz
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  routes:
+    # Route bootstrap behavior:
+    # - One or more entries: Envoy forwards model traffic to configured clusters.
+    # - Empty list: Envoy still deploys and serves health checks, but returns HTTP 503
+    #   for non-health paths with a "no model routes configured" message.
+    # This allows independent platform rollout before models are known/published.
+    - prefix: /m/default/mistral-7b-instruct/
+      cluster: vllm-mistral-7b-instruct
+      serviceHost: vllm-mistral-7b-instruct.lm-serve.svc.cluster.local
+      servicePort: 8000
+
+authz:
+  # Authorization mode controls how Envoy reaches the auth service.
+  # - internal: Auth service runs in the same Kubernetes cluster.
+  #   Use for same-namespace or cross-namespace auth service discovery via cluster DNS.
+  # - external: Auth service runs outside this cluster (for example another cluster or managed endpoint).
+  #   Use a routable host and usually scheme=https.
+  mode: internal
+  endpoint:
+    # host is interpreted differently by mode:
+    # - internal: Kubernetes Service name (for example lm-serve-auth-service).
+    # - external: Fully qualified DNS name or load balancer address reachable by Envoy.
+    host: lm-serve-auth-service
+    # namespace behavior:
+    # - internal: namespace is appended to form host.namespace.svc.cluster.local.
+    # - external: ignored for address construction; you can keep it empty.
+    namespace: lm-serve
+    # TCP port on the auth endpoint.
+    port: 8080
+    # URI scheme used by Envoy when calling auth endpoint.
+    # Set to https when external auth endpoint requires TLS.
+    scheme: http
+    # Path prefix prepended to the incoming request path for auth checks.
+    # Example with /authorize and incoming /v1/chat/completions:
+    # Envoy calls /authorize/v1/chat/completions on the auth endpoint.
+    pathPrefix: /authorize
+    # Upstream timeout for each auth call from Envoy.
+    # Lower values reduce tail latency but increase risk of auth failures.
+    timeout: 3s
+  # Client request headers forwarded from edge request to auth endpoint.
+  # Keep this list minimal to avoid leaking unnecessary request metadata.
+  allowedHeaders:
+    - authorization
+    - x-api-key
+  external:
+    bearerTokenSecret:
+      # MUTUALLY EXCLUSIVE CHOICE:
+      # Option A: create=true and existingSecretName=""
+      #   Chart creates a Secret named by .name and uses .key/.value.
+      #   Useful for local testing or bootstrap.
+      # Option B: create=false and existingSecretName="my-existing-secret"
+      #   Chart reuses an existing Secret and reads token from .key.
+      #   Preferred for production with external secret management.
+      create: true
+      # Name used when create=true.
+      name: lm-serve-authz-bearer-token
+      # Name of pre-created Secret when create=false.
+      # Leave empty when create=true.
+      existingSecretName: ""
+      # Secret data key that stores raw bearer token value (without "Bearer " prefix).
+      key: bearerToken
+      # Only used when create=true. Replace with real token before deploying external mode.
+      value: REPLACE_ME_EXTERNAL_AUTH_BEARER_TOKEN
+
+      # Option A example: chart-managed Secret
+      # create: true
+      # name: lm-serve-authz-bearer-token
+      # existingSecretName: ""
+      # key: bearerToken
+      # value: REPLACE_ME_EXTERNAL_AUTH_BEARER_TOKEN
+
+      # Option B example: existing Secret managed outside this chart
+      # create: false
+      # name: lm-serve-authz-bearer-token
+      # existingSecretName: prod-authz-token
+      # key: bearerToken
+      # value: ""
+
+  # Mode examples:
+  # 1) Same namespace (internal)
+  # mode: internal
+  # endpoint:
+  #   host: lm-serve-auth-service
+  #   namespace: lm-serve
+  #   port: 8080
+  #   scheme: http
+
+  # 2) Different namespace, same cluster (internal)
+  # mode: internal
+  # endpoint:
+  #   host: lm-serve-auth-service
+  #   namespace: security-services
+  #   port: 8080
+  #   scheme: http
+
+  # 3) Different cluster or external endpoint
+  # mode: external
+  # endpoint:
+  #   host: authz.company.example
+  #   namespace: ""
+  #   port: 443
+  #   scheme: https
+
+routeConfig:
+  configMapName: lm-serve-envoy-routes
+  key: routes.yaml
+  liveUpdate:
+    # Live route update controller mode:
+    # - enabled=false: platform route config changes only during helm template/upgrade.
+    # - enabled=true: controller watches labeled route ConfigMaps across namespaces,
+    #   writes merged envoy config into platform ConfigMap, and triggers rolling restart.
+    enabled: false
+
+    controller:
+      name: vllm-route-aggregator
+      image:
+        repository: REPLACE_ME_REGISTRY/lm-serve-route-aggregator
+        tag: 0.1.0
+        pullPolicy: IfNotPresent
+
+    # Poll interval for scanning route source ConfigMaps.
+    # Lower value picks up model changes faster but increases API traffic.
+    pollIntervalSec: 30
+
+    # Namespace allowlist regex for route-source discovery.
+    # Only matching namespaces are scanned for route ConfigMaps.
+    # Example: ^lm-serve-.*$ matches lm-serve-dev, lm-serve-prod.
+    namespaceAllowRegex: ^lm-serve-.*$
+
+    # Names of model route ConfigMaps that platform is allowed to read.
+    # RBAC is restricted to these names (cluster-wide get only).
+    sourceConfigMapNames:
+      - lm-serve-envoy-routes
+
+    # Source discovery label key/value.
+    # Note: Kubernetes label keys support a single '/' separator. We use
+    # lm-serve/model-route-source rather than lm-serve/model/route-source.
+    labelKey: lm-serve/model-route-source
+    labelValue: "true"
+
+    # Route data key expected in discovered ConfigMaps.
+    # models chart publishes this as routes.json.
+    sourceKey: routes.json
+
+    # Whether at least one matching source ConfigMap must exist.
+    # true  => controller keeps last config and logs error when no source found.
+    # false => controller allows empty source set and preserves bootstrap fallback route.
+    requireAnySource: false
+
+    # Controller-owned ServiceAccount name.
+    serviceAccountName: vllm-route-aggregator
+
+    # Example: enable live update from all model namespaces
+    # liveUpdate:
+    #   enabled: true
+    #   pollIntervalSec: 30
+    #   namespaceAllowRegex: ^lm-serve-.*$
+    #   sourceConfigMapNames:
+    #     - lm-serve-envoy-routes
+    #   labelKey: lm-serve/model-route-source
+    #   labelValue: "true"
+    #   sourceKey: routes.json
+    #   requireAnySource: false
+
+  # Intended reload strategy for route updates.
+  # - rollout: update Deployment pod template to trigger rolling restart.
+  # - reloader: use external reloader/watcher integration.
+  # Current chart keeps this as a configuration contract field.
+  reloadStrategy: rollout

@@ -1,11 +1,19 @@
 publisher:
+  # Enable publisher runtime objects in this chart.
+  # true  => CronJob and related publisher workflow are active.
+  # false => chart can still hold catalog definitions but does not publish artifacts.
   enabled: true
   name: lm-serve-model-publisher
   image: REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
   imagePullPolicy: IfNotPresent
+  # Cron schedule controlling publish frequency.
+  # Faster schedules reduce staleness but increase object storage and API churn.
   schedule: "0 */6 * * *"
   serviceAccountName: lm-serve-model-publisher
   catalogKey: models.yaml
+  # Staging cleanup behavior:
+  # true  => remove stale staged artifacts to keep storage clean.
+  # false => keep staged artifacts for debugging or audit workflows.
   pruneStaging: true
   sharedArtifactsPrefix: _shared
   storage:
@@ -17,12 +25,18 @@ publisher:
     hfSecretName: lm-publisher-hf-credentials
 
 consumer:
+  # Enable consumer-facing catalog/secret artifacts from this chart.
+  # If false, publisher still runs but this chart will not prepare consumer artifacts.
   enabled: true
   catalogNamespace: lm-serve
   # Safe default placeholder used until a real credential value is supplied for a consumer catalog secret.
   # This should stay harmless and never grant privileged access.
   placeholderSecretValue: unknown
   catalogs:
+    # Each catalog entry is independently toggleable.
+    # enabled=true  => include catalog ConfigMap and RBAC/Secret wiring for that environment.
+    # enabled=false => exclude that environment from publisher runs.
+    # Use this to roll out one environment at a time.
     - env: sample-env
       enabled: true
       file: sample-env.yaml
@@ -44,3 +58,30 @@ consumer:
       namespace: lm-serve-tiny-smoke
       serviceAccountName: vllm-catalog-model-reconciler
       secretName: lm-serve-tiny-smoke-catalog-credentials
+
+# Multi-option examples:
+# 1) Keep staging cleanup enabled for routine operations
+# publisher:
+#   pruneStaging: true
+
+# 2) Disable staging cleanup to retain previous staged artifacts
+# publisher:
+#   pruneStaging: false
+
+# 3) Enable only one consumer catalog during phased rollout
+# consumer:
+#   catalogs:
+#     - env: sample-env
+#       enabled: true
+#       file: sample-env.yaml
+#       configMapName: lm-serve-model-catalog-sample-env
+#       namespace: lm-serve
+#       serviceAccountName: vllm-catalog-model-reconciler
+#       secretName: lm-serve-sample-env-catalog-credentials
+#     - env: small-representative
+#       enabled: false
+#       file: small-representative.yaml
+#       configMapName: lm-serve-model-catalog-small-representative
+#       namespace: lm-serve-small-representative
+#       serviceAccountName: vllm-catalog-model-reconciler
+#       secretName: lm-serve-small-representative-catalog-credentials

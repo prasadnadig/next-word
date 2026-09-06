@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lm-serve-platform
+description: Helm chart for the lm-serve Envoy edge software rollout
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

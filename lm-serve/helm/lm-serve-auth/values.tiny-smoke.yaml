@@ -1,14 +1,29 @@
 authService:
+  # Set true when this environment should run its own in-cluster auth service.
+  # Set false only when another shared auth deployment is used.
   enabled: true
 
 secrets:
+  # tiny-smoke uses create mode by default for quick setup.
+  # Switch to existingSecret when testing shared secret management.
   mode: create
   existingSecretName: lm-serve-auth-secrets
   keys:
     apiKeys: api_keys.txt
     jwtSecret: jwt_hs256_secret
+  # Each entry becomes one line in api_keys.txt used for x-api-key validation.
   apiKeys:
     - REPLACE_ME_API_KEY
+  # HS256 secret used for bearer token JWT verification.
   jwtSecret: REPLACE_ME_JWT_SECRET
   externalRef:
     enabled: false
+
+  # Alternative for production-like setup:
+  # mode: existingSecret
+  # existingSecretName: lm-serve-auth-secrets
+  # keys:
+  #   apiKeys: api_keys.txt
+  #   jwtSecret: jwt_hs256_secret
+  # apiKeys: []
+  # jwtSecret: ""

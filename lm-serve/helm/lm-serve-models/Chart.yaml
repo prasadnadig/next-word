@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lm-serve-models
+description: Helm chart for lm-serve model rollout and route data ownership
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

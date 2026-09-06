@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.envoy.name }}
+  labels:
+{{ include "lm-serve-platform.labels" . | indent 4 }}
+spec:
+{{- if eq .Values.authz.mode "external" }}
+  {{- if and .Values.authz.external.bearerTokenSecret.create .Values.authz.external.bearerTokenSecret.existingSecretName }}
+    {{- fail "authz.external.bearerTokenSecret.create=true is mutually exclusive with non-empty existingSecretName" }}
+  {{- end }}
+  {{- if and (not .Values.authz.external.bearerTokenSecret.create) (not .Values.authz.external.bearerTokenSecret.existingSecretName) }}
+    {{- fail "authz.external.bearerTokenSecret.existingSecretName must be set when create=false" }}
+  {{- end }}
+{{- end }}
+  replicas: {{ .Values.envoy.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.envoy.name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.envoy.name }}
+{{ include "lm-serve-platform.labels" . | indent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: envoy
+        image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
+        imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+        args: ["-c", "/etc/envoy/envoy.yaml", "--service-cluster", "vllm-edge"]
+        ports:
+          - name: http
+            containerPort: {{ .Values.envoy.service.targetPort }}
+          - name: admin
+            containerPort: {{ .Values.envoy.admin.port }}
+        volumeMounts:
+          - name: envoy-config
+            mountPath: /etc/envoy
+            readOnly: true
+{{- if eq .Values.authz.mode "external" }}
+        env:
+          - name: AUTHZ_BEARER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.authz.external.bearerTokenSecret.existingSecretName | default .Values.authz.external.bearerTokenSecret.name }}
+                key: {{ .Values.authz.external.bearerTokenSecret.key }}
+{{- end }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.envoy.health.path }}
+            port: {{ .Values.envoy.service.targetPort }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.envoy.health.path }}
+            port: {{ .Values.envoy.service.targetPort }}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101
+          runAsGroup: 101
+        resources:
+{{ toYaml .Values.envoy.resources | indent 10 }}
+      volumes:
+      - name: envoy-config
+        configMap:
+          name: {{ .Values.envoy.name }}-config
+          defaultMode: 0444
