@@ -23,7 +23,7 @@ This directory provides a clean, modular baseline for model publication and vLLM
   - Dedicated model publisher chart that owns the source model catalogs, publication CronJob, RBAC, and publishing runtime.
 
 - `deploy/`
-  - `deploy_lm_serve_catalog.sh`: Model deployment reconciler that reconciles catalog entries into one StatefulSet per model plus shared Envoy edge.
+  - `deploy_lm_serve_catalog.py`: Model deployment reconciler that reconciles catalog entries into one StatefulSet per model plus shared Envoy edge.
   - `generate_test_auth_materials.sh`: Helper for initial API key/JWT bootstrap for small-team testing.
   - `smoke_test_lm_serve_catalog.sh`: End-to-end smoke tester for all enabled models using API key/JWT.
   - `Dockerfile`: Optional in-cluster runtime image for the model deployment reconciler.
@@ -76,9 +76,9 @@ To add a new environment, copy the publisher catalog and the model runtime overr
 
 ```bash
 make help
-make apply-base
-make deploy-once
-make happy-path API_KEY=<api-key>
+make apply-base ENV=sample-env
+make apply-serve-model ENV=sample-env
+make happy-apply ENV=sample-env API_KEY=<api-key>
 ```
 
 ## Helm customization workflow
@@ -108,6 +108,7 @@ For continuous in-cluster model reconciliation and periodic model publishing, bu
 make build-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 make push-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 make apply-model-reconciler ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-serve-model ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 
 make build-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 make push-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0

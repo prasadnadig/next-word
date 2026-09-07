@@ -4,19 +4,19 @@ This guide explains how to install and operate the vLLM serving stack model reco
 
 ## What the model deployment reconciler does
 
-`deploy_lm_serve_catalog.sh` reconciles a shared model catalog into:
+`deploy_lm_serve_catalog.py` reconciles a shared model catalog into:
 
 - One StatefulSet per enabled model (stable per-replica PVC cache).
 - One Service per enabled model.
 - Route data that the platform chart can consume through the shared route ConfigMap contract.
 
-Because reconciliation is catalog-driven, model add/update/remove operations are done by editing one ConfigMap and re-running the script (or running with watch mode).
+Because reconciliation is catalog-driven, model add/update/remove operations are done by editing one ConfigMap and rerunning the model-reconciler image Job (or enabling watch mode).
 
 ## Prerequisites
 
 - Kubernetes cluster with NVIDIA GPU Operator already installed.
 - `kubectl` access with permissions to create resources in target namespace.
-- `yq` installed locally.
+- `yq` installed locally (required by smoke-test helper scripts).
 - `helm` installed locally.
 - Existing StorageClass suitable for model PVCs.
 - Object storage bucket containing model artifacts under `<prefix>/current/`.
@@ -28,7 +28,7 @@ Make-based shortcut:
 ```bash
 cd ..
 make apply-base ENV=sample-env
-make deploy-once
+make apply-serve-model ENV=sample-env
 ```
 
 Auth namespace selection:
@@ -84,17 +84,24 @@ bash generate_test_auth_materials.sh --team-size 3 --jwt-sub dev-user --jwt-ttl-
 kubectl -n lm-serve edit secret lm-serve-auth-secrets
 ```
 
-5. Run reconciliation once
+5. Build and push the model reconciler image
 
 ```bash
-bash deploy_lm_serve_catalog.sh \
-  --namespace lm-serve \
-  --catalog-configmap lm-serve-model-catalog \
-  --catalog-key models.yaml \
-  --model-service-type LoadBalancer
+cd ..
+make build-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make push-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 ```
 
-6. Verify resources
+6. Run reconciliation once (in-cluster image Job)
+
+```bash
+cd ..
+make apply-serve-model \
+  ENV=sample-env \
+  MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+```
+
+7. Verify resources
 
 ```bash
 kubectl -n lm-serve get pods
@@ -102,19 +109,20 @@ kubectl -n lm-serve get statefulset
 kubectl -n lm-serve get svc
 ```
 
-7. Get edge endpoint
+8. Get edge endpoint
 
 ```bash
 kubectl -n lm-serve get svc vllm-edge
 ```
 
-8. If you want the model reconciler to run in-cluster, apply the models chart Job instead of the local script
+9. If you want continuous in-cluster reconciliation, apply watch mode
 
 ```bash
 helm upgrade --install lm-serve-models ../helm/lm-serve-models -n lm-serve \
   -f ../helm/lm-serve-models/values.yaml \
   -f ../helm/lm-serve-models/values.sample-env.yaml \
   --set modelReconciler.enabled=true \
+  --set-string modelReconciler.args.watchIntervalSec=60 \
   --set-string modelReconciler.image=REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
 ```
 
@@ -123,11 +131,10 @@ helm upgrade --install lm-serve-models ../helm/lm-serve-models -n lm-serve \
 To continuously pick up ConfigMap changes:
 
 ```bash
-bash deploy_lm_serve_catalog.sh \
-  --namespace lm-serve \
-  --catalog-configmap lm-serve-model-catalog \
-  --catalog-key models.yaml \
-  --watch-interval-sec 60
+cd ..
+make deploy-watch-local \
+  ENV=sample-env \
+  MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 ```
 
 ## In-cluster model reconciler option (recommended for continuous model reconciliation)

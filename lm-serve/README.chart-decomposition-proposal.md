@@ -238,7 +238,7 @@ rbac:
 
 ## Script Implications
 
-For `deploy_lm_serve_catalog.sh`, target end state:
+For `deploy_lm_serve_catalog.py`, target end state:
 
 - Keep:
   - model StatefulSet/Service reconciliation logic.

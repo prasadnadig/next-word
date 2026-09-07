@@ -10,6 +10,8 @@ AUTH_NAMESPACE ?= $(if $(ENV),$(ENV),$(NAMESPACE))
 # Configure optional image overrides for in-cluster model reconciliation and publishing.
 AUTH_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-auth-service:0.1.0
 MODEL_RECONCILER_IMAGE ?= REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
+MODEL_RECONCILER_JOB_NAME ?= vllm-catalog-model-reconciler
+MODEL_RECONCILER_WATCH_INTERVAL_SEC ?= 60
 PUBLISHER_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
 ROUTE_AGGREGATOR_IMAGE_REPOSITORY ?= REPLACE_ME_REGISTRY/lm-serve-route-aggregator
 ROUTE_AGGREGATOR_IMAGE_TAG ?= 0.1.0
@@ -54,7 +56,7 @@ help:
 	@echo "    done: install auth, platform, and models charts; disable the model reconciler Job for the base install"
 	@echo "    done+: apply namespace-scoped example Secrets required by auth/object-storage workflows"
 	@echo "  make apply-serve-model"
-	@echo "    done: reconcile catalog once; create/update model StatefulSets, related Services, and route data"
+	@echo "    done: run one in-cluster reconciliation pass via the model-reconciler image and wait for Job completion"
 	@echo "  make generate-auth-materials"
 	@echo "    done: generate bootstrap API key/JWT materials for small-team validation"
 	@echo "  make smoke-test-api-key API_KEY=<k>"
@@ -75,7 +77,7 @@ help:
 	@echo ""
 	@echo "Continuous reconciliation and automation options:"
 	@echo "  make deploy-watch-local"
-	@echo "    done: reconcile continuously from local machine every 60s to keep workloads aligned with catalog edits"
+	@echo "    done: enable in-cluster continuous reconciliation using the model-reconciler image"
 	@echo "  make build-model-reconciler-image"
 	@echo "    done: build model deployment reconciler container image"
 	@echo "  make push-model-reconciler-image"
@@ -87,7 +89,7 @@ help:
 	@echo "  make apply-auth-service"
 	@echo "    done: deploy or update auth chart with the selected auth image"
 	@echo "  make apply-model-reconciler ENV=<env> MODEL_RECONCILER_IMAGE=<img>"
-	@echo "    done: enable in-cluster model reconciliation and configure the reconciler image used by the Job"
+	@echo "    done: enable in-cluster model reconciliation and configure Job/image/args for the reconciler"
 	@echo "  make build-route-aggregator-image"
 	@echo "    done: build standalone lm-serve-platform route-aggregator controller image"
 	@echo "  make push-route-aggregator-image"
@@ -116,6 +118,8 @@ help:
 	@echo "    done: select where auth chart is deployed; default follows ENV, override for shared auth"
 	@echo "  AUTH_IMAGE=$(AUTH_IMAGE) MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE)"
 	@echo "    done: set runtime images for auth service, model reconciliation, and model publishing automation"
+	@echo "  MODEL_RECONCILER_JOB_NAME=$(MODEL_RECONCILER_JOB_NAME) MODEL_RECONCILER_WATCH_INTERVAL_SEC=$(MODEL_RECONCILER_WATCH_INTERVAL_SEC)"
+	@echo "    done: override in-cluster reconciler Job name and watch interval seconds"
 	@echo "  ROUTE_AGGREGATOR_IMAGE=$(ROUTE_AGGREGATOR_IMAGE)"
 	@echo "    done: set standalone platform route-aggregator image (build/push/apply-route-aggregator)"
 	@echo "  ROUTE_AGGREGATOR_IMAGE_REPOSITORY=$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY) ROUTE_AGGREGATOR_IMAGE_TAG=$(ROUTE_AGGREGATOR_IMAGE_TAG)"
@@ -231,21 +235,33 @@ apply-base: confirm-target-cluster
 
 # Step 2: Reconcile model catalog into running model workloads and services.
 .PHONY: apply-serve-model
-apply-serve-model: confirm-target-cluster check-kubectl check-yq
-	bash deploy/deploy_lm_serve_catalog.sh \
-	  --namespace $(NAMESPACE) \
-	  --catalog-configmap $(CATALOG_CONFIGMAP) \
-	  --catalog-key $(CATALOG_KEY) \
-	  --model-service-type $(MODEL_SERVICE_TYPE)
+apply-serve-model: check-kubectl check-helm require-env
+	@$(MAKE) apply-model-reconciler \
+	  FORCE="$(FORCE)" \
+	  ENV="$(ENV)" \
+	  NAMESPACE="$(NAMESPACE)" \
+	  CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" \
+	  CATALOG_KEY="$(CATALOG_KEY)" \
+	  MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" \
+	  MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" \
+	  MODEL_RECONCILER_JOB_NAME="$(MODEL_RECONCILER_JOB_NAME)" \
+	  MODEL_RECONCILER_WATCH_INTERVAL_SEC="0" \
+	  HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	kubectl -n $(NAMESPACE) wait --for=condition=complete --timeout=20m job/$(MODEL_RECONCILER_JOB_NAME)
 
 .PHONY: deploy-watch-local
-deploy-watch-local: confirm-target-cluster check-kubectl check-yq
-	bash deploy/deploy_lm_serve_catalog.sh \
-	  --namespace $(NAMESPACE) \
-	  --catalog-configmap $(CATALOG_CONFIGMAP) \
-	  --catalog-key $(CATALOG_KEY) \
-	  --model-service-type $(MODEL_SERVICE_TYPE) \
-	  --watch-interval-sec 60
+deploy-watch-local: check-kubectl check-helm require-env
+	@$(MAKE) apply-model-reconciler \
+	  FORCE="$(FORCE)" \
+	  ENV="$(ENV)" \
+	  NAMESPACE="$(NAMESPACE)" \
+	  CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" \
+	  CATALOG_KEY="$(CATALOG_KEY)" \
+	  MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" \
+	  MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" \
+	  MODEL_RECONCILER_JOB_NAME="$(MODEL_RECONCILER_JOB_NAME)" \
+	  MODEL_RECONCILER_WATCH_INTERVAL_SEC="$(MODEL_RECONCILER_WATCH_INTERVAL_SEC)" \
+	  HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 
 # Step 3: Generate test credentials and validate serving with smoke tests.
 .PHONY: generate-auth-materials
@@ -326,9 +342,15 @@ push-model-reconciler-image: check-docker
 
 .PHONY: apply-model-reconciler
 apply-model-reconciler: confirm-target-cluster check-helm check-kubectl require-env
+	kubectl -n $(NAMESPACE) delete job $(MODEL_RECONCILER_JOB_NAME) --ignore-not-found
 	helm upgrade --install $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) --create-namespace $(MODELS_HELM_VALUES) \
 	  --set modelReconciler.enabled=true \
-	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE) $(HELM_EXTRA_ARGS)
+	  --set-string modelReconciler.name=$(MODEL_RECONCILER_JOB_NAME) \
+	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE) \
+	  --set-string modelReconciler.args.catalogConfigMapName=$(CATALOG_CONFIGMAP) \
+	  --set-string modelReconciler.args.catalogKey=$(CATALOG_KEY) \
+	  --set-string modelReconciler.args.modelServiceType=$(MODEL_SERVICE_TYPE) \
+	  --set-string modelReconciler.args.watchIntervalSec=$(MODEL_RECONCILER_WATCH_INTERVAL_SEC) $(HELM_EXTRA_ARGS)
 
 # Optional extension: Automate model publishing.
 .PHONY: build-model-publisher-image
@@ -386,8 +408,8 @@ happy-apply: confirm-target-cluster
 	@echo "      Why: cluster-local reconciliation keeps model runtimes aligned with catalog changes."
 	@$(MAKE) apply-model-reconciler FORCE=true ENV="$(ENV)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[4/5] Running one immediate reconciliation pass from local workstation."
-	@echo "      Why: bootstraps model workloads immediately instead of waiting for periodic loops."
-	@$(MAKE) apply-serve-model FORCE=true NAMESPACE="$(NAMESPACE)" CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)"
+	@echo "      Why: bootstraps model workloads immediately by running the in-cluster reconciler image in one-shot mode."
+	@$(MAKE) apply-serve-model FORCE=true ENV="$(ENV)" NAMESPACE="$(NAMESPACE)" CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" MODEL_RECONCILER_JOB_NAME="$(MODEL_RECONCILER_JOB_NAME)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[5/5] Running smoke test against enabled models through the edge endpoint."
 	@echo "      Why: validates auth path plus basic inference availability after deployment."
 	@if [[ -n "$(API_KEY)" && -n "$(JWT_TOKEN)" ]]; then \
@@ -398,7 +420,7 @@ happy-apply: confirm-target-cluster
 		$(MAKE) smoke-test-jwt JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)"; \
 	fi
 	@echo "Happy apply complete."
-	@echo "What next: use deploy-watch-local if you also want local-loop reconciliation."
+	@echo "What next: use deploy-watch-local if you want continuous in-cluster reconciliation."
 
 .PHONY: happy-release
 happy-release: confirm-target-cluster
