@@ -38,7 +38,7 @@ This document defines a 4-chart split so auth, platform software, model rollout,
 | Envoy Service (`vllm-edge`) | `lm-serve-platform` | Exposure policy (ClusterIP/NodePort/LoadBalancer) |
 | Envoy base config | `lm-serve-platform` | Listener, ext_authz, health routes |
 | Envoy route config ConfigMap data | `lm-serve-models` | Model-specific routes/clusters |
-| Source catalog definitions | `lm-serve-publisher` | Source of model intent for each environment |
+| Source catalog definitions | `lm-serve-publisher` | Source of model intent for each tenant |
 | Published model catalog ConfigMap | `lm-serve-publisher` | Generated artifact consumed by runtime |
 | Model StatefulSets/Services | `lm-serve-models` | Direct templates or reconciler-managed |
 | Model reconciler Job + RBAC | `lm-serve-models` | If using controller pattern |
@@ -133,10 +133,10 @@ secrets:
   existingSecretName: lm-serve-auth-secrets
   keys:
     apiKeys: api_keys.txt
-    jwtSecret: jwt_hs256_secret
+    jwtSecrets: jwt_hs256_secrets.txt
   externalRef:
     enabled: false
-    # provider-specific fields in environment overlays
+    # provider-specific fields in tenant overlays
 ```
 
 ## `lm-serve-platform` values

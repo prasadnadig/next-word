@@ -1,4 +1,4 @@
-# Consumer-side environment profile for the model-runtime chart.
+# Consumer-side tenant profile for the model-runtime chart.
 # The source-of-truth model catalog is owned by the publisher chart under
 # `lm-serve-publisher/catalogs/*.yaml`; this file configures the consumer runtime.
 

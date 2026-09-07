@@ -1,6 +1,6 @@
 {{- if .Values.routeConfig.configMapName }}
 {{- $envSegment := .Release.Namespace -}}
-{{- $aliasMap := .Values.routeConfig.namespaceEnvSegmentMap | default dict -}}
+{{- $aliasMap := .Values.routeConfig.namespaceTenantSegmentMap | default dict -}}
 {{- if hasKey $aliasMap .Release.Namespace -}}
 {{- $envSegment = index $aliasMap .Release.Namespace -}}
 {{- end -}}
@@ -8,7 +8,7 @@
 {{- $envSegment = regexReplaceAll "^-+" $envSegment "" -}}
 {{- $envSegment = regexReplaceAll "-+$" $envSegment "" -}}
 {{- if eq $envSegment "" -}}
-{{- fail "routeConfig namespaceEnvSegmentMap produced an empty env segment" -}}
+{{- fail "routeConfig namespaceTenantSegmentMap produced an empty tenant segment" -}}
 {{- end -}}
 {{- $routes := list }}
 {{- range .Values.catalog.models }}

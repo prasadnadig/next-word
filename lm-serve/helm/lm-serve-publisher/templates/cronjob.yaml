@@ -42,14 +42,14 @@ spec:
                 {{- if not $enabledCatalogs }}
                 - --catalog-configmap
                 - {{ .Values.publisher.catalogConfigMapName }}
-                - --catalog-env
+                - --catalog-tenant
                 - default
                 {{- else }}
                 {{- range $enabledCatalogs }}
                 - --catalog-configmap
                 - {{ .configMapName }}
-                - --catalog-env
-                - {{ .env | quote }}
+                - --catalog-tenant
+                - {{ .tenant | quote }}
                 {{- end }}
                 {{- end }}
               env:

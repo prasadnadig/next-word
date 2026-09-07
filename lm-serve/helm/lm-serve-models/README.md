@@ -25,15 +25,15 @@ Route ConfigMap output details:
 
 Route prefix strategy:
 
-- Namespaced-only: routes are generated as `/m/<env>/<model>/`.
-- `<env>` defaults to the Helm release namespace (sanitized to lowercase URL-safe segment).
-- Optional overrides are supported through `routeConfig.namespaceEnvSegmentMap`, mapping namespace to alias.
+- Namespaced-only: routes are generated as `/m/<tenant>/<model>/`.
+- `<tenant>` defaults to the Helm release namespace (sanitized to lowercase URL-safe segment).
+- Optional overrides are supported through `routeConfig.namespaceTenantSegmentMap`, mapping namespace to alias.
 
-Use namespace alias mapping when you want a stable short environment token in URLs while still deploying releases in longer namespace names.
+Use namespace alias mapping when you want a stable short tenant token in URLs while still deploying releases in longer namespace names.
 
-## Environment profiles
+## Tenant profiles
 
-This chart includes environment profiles for consumer-side deployment settings:
+This chart includes tenant profiles for consumer-side deployment settings:
 
 - `values.sample-env.yaml`
 - `values.small-representative.yaml`

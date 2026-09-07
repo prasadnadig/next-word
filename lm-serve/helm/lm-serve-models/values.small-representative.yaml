@@ -1,10 +1,10 @@
-# small-representative environment profile
+# small-representative tenant profile
 #
 # Purpose:
 # - Consumer-side deployment profile for the model-runtime chart.
 # - The source-of-truth model catalog is owned by the publisher under
 #   `lm-serve-publisher/catalogs/*.yaml`.
-# - This file configures storage and runtime settings for the consuming environment.
+# - This file configures storage and runtime settings for the consuming tenant.
 #
 # The actual model list and serving definitions live in publisher-managed catalog
 # files instead of here.
@@ -28,7 +28,7 @@
 
 catalog:
   storage:
-    # Replace with environment-specific object storage for this profile.
+    # Replace with tenant-specific object storage for this profile.
     bucket: my-small-representative-llm-model-bucket
     endpoint: https://us-ord-1.linodeobjects.com
     region: us-east-1

@@ -68,7 +68,7 @@ class Config:
     catalog_key: str
     route_configmap: str
     route_key: str
-    route_env_segment: str
+    route_tenant_segment: str
     model_service_type: str
     vllm_image_default: str
     init_sync_image: str
@@ -106,9 +106,9 @@ def parse_args() -> Config:
     parser.add_argument("--route-configmap", default="lm-serve-envoy-routes")
     parser.add_argument("--route-key", default="routes.yaml")
     parser.add_argument(
-        "--route-env-segment",
+        "--route-tenant-segment",
         default="",
-        help="Optional route env segment for /m/<env>/<model>/ prefixes (default: namespace name)",
+        help="Optional route tenant segment for /m/<tenant>/<model>/ prefixes (default: namespace name)",
     )
     parser.add_argument(
         "--model-service-type",
@@ -134,7 +134,7 @@ def parse_args() -> Config:
         catalog_key=args.catalog_key,
         route_configmap=args.route_configmap,
         route_key=args.route_key,
-        route_env_segment=args.route_env_segment,
+        route_tenant_segment=args.route_tenant_segment,
         model_service_type=args.model_service_type,
         vllm_image_default=args.vllm_image,
         init_sync_image=args.init_sync_image,
@@ -259,7 +259,7 @@ def write_manifest(tmpdir: Path, name: str, docs: list[dict[str, Any]]) -> Path:
     return manifest_path
 
 
-def render_route_configmap(config: Config, catalog: dict[str, Any], route_env_segment: str) -> dict[str, Any]:
+def render_route_configmap(config: Config, catalog: dict[str, Any], route_tenant_segment: str) -> dict[str, Any]:
     routes: list[dict[str, Any]] = []
     for model in enabled_models(catalog):
         model_name = str(model["name"])
@@ -268,7 +268,7 @@ def render_route_configmap(config: Config, catalog: dict[str, Any], route_env_se
         service_port = int(serving.get("port", 8000))
         routes.append(
             {
-                "prefix": f"/m/{route_env_segment}/{model_name}/",
+                "prefix": f"/m/{route_tenant_segment}/{model_name}/",
                 "cluster": f"vllm-{model_k8s}",
                 "serviceHost": f"vllm-{model_k8s}.{config.namespace}.svc.cluster.local",
                 "servicePort": service_port,
@@ -568,9 +568,9 @@ def reconcile_once(config: Config) -> None:
         tmpdir = Path(td)
         catalog = fetch_catalog(config)
 
-        route_env_segment = sanitize_name(config.route_env_segment or config.namespace)
-        if not route_env_segment:
-            fatal("Route env segment resolved to empty string")
+        route_tenant_segment = sanitize_name(config.route_tenant_segment or config.namespace)
+        if not route_tenant_segment:
+            fatal("Route tenant segment resolved to empty string")
 
         desired_names: set[str] = set()
         models = enabled_models(catalog)
@@ -588,7 +588,7 @@ def reconcile_once(config: Config) -> None:
         if not desired_names:
             warn("No enabled models found in catalog; applying empty route set and cleaning stale runtimes")
 
-        route_cm = render_route_configmap(config, catalog, route_env_segment)
+        route_cm = render_route_configmap(config, catalog, route_tenant_segment)
         route_manifest = write_manifest(tmpdir, "route-configmap.yaml", [route_cm])
         run_apply(config, route_manifest)
 

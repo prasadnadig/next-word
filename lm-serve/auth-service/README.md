@@ -10,12 +10,12 @@ This module provides the internal auth service used by Envoy ext_authz.
 ## Secrets contract
 
 - API keys file: `/secrets/api_keys.txt`
-- JWT secret file: `/secrets/jwt_hs256_secret`
+- JWT secrets file: `/secrets/jwt_hs256_secrets.txt` (one secret per line)
 
 Override paths with:
 
 - `API_KEYS_FILE`
-- `JWT_SECRET_FILE`
+- `JWT_SECRETS_FILE`
 - `SECRET_RELOAD_INTERVAL_SEC`
 
 ## Local run

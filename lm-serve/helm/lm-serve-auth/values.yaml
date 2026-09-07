@@ -22,7 +22,7 @@ authService:
 
 secrets:
   # Secret mode controls how credentials are provided to auth service.
-  # - create: chart creates a Secret using secrets.apiKeys and secrets.jwtSecret.
+  # - create: chart creates a Secret by combining api/jwt entries from enabled secrets.catalogs.
   # - existingSecret: chart expects an already-created Secret named existingSecretName.
   # Note: externalRef block is metadata only in current chart version and does not create resources.
   mode: existingSecret
@@ -34,18 +34,32 @@ secrets:
 
   # Keys inside the Secret that the auth service reads.
   # - apiKeys: multi-line file where each line is a valid API key.
-  # - jwtSecret: HS256 secret string used for bearer JWT verification.
+  # - jwtSecrets: multi-line file where each line is a valid HS256 JWT secret.
   keys:
     apiKeys: api_keys.txt
-    jwtSecret: jwt_hs256_secret
+    jwtSecrets: jwt_hs256_secrets.txt
 
-  # Used only when mode=create.
-  # Keep at least one API key for non-JWT clients.
-  apiKeys: []
-
-  # Used only when mode=create.
-  # Empty string is invalid when mode=create.
-  jwtSecret: ""
+  # Canonical multi-tenant auth registry.
+  # Each enabled catalog contributes API keys and JWT secrets into the chart-managed Secret files.
+  catalogs:
+    - tenant: sample-env
+      enabled: true
+      apiKeys:
+        - REPLACE_ME_SAMPLE_ENV_API_KEY
+      jwtSecrets:
+        - REPLACE_ME_SAMPLE_ENV_JWT_SECRET
+    - tenant: small-representative
+      enabled: true
+      apiKeys:
+        - REPLACE_ME_SMALL_REPRESENTATIVE_API_KEY
+      jwtSecrets:
+        - REPLACE_ME_SMALL_REPRESENTATIVE_JWT_SECRET
+    - tenant: tiny-smoke
+      enabled: true
+      apiKeys:
+        - REPLACE_ME_TINY_SMOKE_API_KEY
+      jwtSecrets:
+        - REPLACE_ME_TINY_SMOKE_JWT_SECRET
 
   # Reserved for future external-secret integration.
   # Current templates do not consume this block directly.
@@ -57,15 +71,19 @@ secrets:
   # existingSecretName: lm-serve-auth-secrets
   # keys:
   #   apiKeys: api_keys.txt
-  #   jwtSecret: jwt_hs256_secret
-  # apiKeys:
-  #   - team-dev-key-1
-  #   - team-dev-key-2
-  # jwtSecret: replace-with-strong-hs256-secret
+  #   jwtSecrets: jwt_hs256_secrets.txt
+  # catalogs:
+  #   - tenant: sample-env
+  #     enabled: true
+  #     apiKeys:
+  #       - team-dev-key-1
+  #       - team-dev-key-2
+  #     jwtSecrets:
+  #       - replace-with-strong-hs256-secret
 
   # Option B example: use an existing pre-provisioned secret
   # mode: existingSecret
   # existingSecretName: prod-auth-secrets
   # keys:
   #   apiKeys: api_keys.txt
-  #   jwtSecret: jwt_hs256_secret
+  #   jwtSecrets: jwt_hs256_secrets.txt

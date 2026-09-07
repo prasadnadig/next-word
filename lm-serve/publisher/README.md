@@ -72,7 +72,7 @@ Make-based variant:
 make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 ```
 
-`ENV` is not required for the publisher install itself because the publisher chart owns the canonical registry in `../helm/lm-serve-publisher/values.yaml`. Model publisher deployment is supported only through the dedicated `../helm/lm-serve-publisher/` chart.
+`TENANT` is not required for the publisher install itself because the publisher chart owns the canonical registry in `../helm/lm-serve-publisher/values.yaml`. Model publisher deployment is supported only through the dedicated `../helm/lm-serve-publisher/` chart.
 
 ## Cross-cluster operation
 

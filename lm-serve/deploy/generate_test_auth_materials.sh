@@ -77,7 +77,7 @@ printf "\nGenerated JWT secret:\n%s\n" "${JWT_SECRET}"
 printf "\nSample test JWT (HS256):\n%s\n" "${TEST_JWT}"
 
 printf "\nSuggested Secret update:\n"
-printf "kubectl -n lm-serve create secret generic lm-serve-auth-secrets \\\n  --from-literal=jwt_hs256_secret='%s' \\\n  --from-literal=api_keys.txt='" "${JWT_SECRET}"
+printf "kubectl -n lm-serve create secret generic lm-serve-auth-secrets \\\n  --from-literal=jwt_hs256_secrets.txt='%s' \\\n  --from-literal=api_keys.txt='" "${JWT_SECRET}"
 for key in "${API_KEYS[@]}"; do
   printf "%s\\n" "${key}"
 done

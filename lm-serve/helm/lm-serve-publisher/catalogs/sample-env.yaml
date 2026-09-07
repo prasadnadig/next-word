@@ -1,12 +1,12 @@
 # Sample-env model catalog profile
 #
 # Purpose:
-# - Default/reference catalog for a broadly representative LLM environment.
+# - Default/reference catalog for a broadly representative LLM tenant.
 # - Keep one strong general-purpose model visible while leaving a second larger
 #   candidate disabled until capacity and licensing requirements are confirmed.
 #
 # Historical note:
-# - This was the initial example for a reusable model-serving environment, meant
+# - This was the initial example for a reusable model-serving tenant, meant
 #   to exercise a realistic production-style deployment with a standard
 #   instruction-tuned model.
 #

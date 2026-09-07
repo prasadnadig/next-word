@@ -11,7 +11,7 @@ Envoy routes each model by URL prefix:
 - `http://<VLLM_EDGE>/m/<ENV_SEGMENT>/<MODEL_NAME>/v1/embeddings`
 
 `<ENV_SEGMENT>` defaults to the namespace name and can be overridden with
-`routeConfig.namespaceEnvSegmentMap`.
+`routeConfig.namespaceTenantSegmentMap`.
 
 Example model names are those from `models.yaml` in the catalog ConfigMap.
 

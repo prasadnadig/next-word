@@ -34,24 +34,24 @@ consumer:
   placeholderSecretValue: unknown
   catalogs:
     # Each catalog entry is independently toggleable.
-    # enabled=true  => include catalog ConfigMap and RBAC/Secret wiring for that environment.
-    # enabled=false => exclude that environment from publisher runs.
-    # Use this to roll out one environment at a time.
-    - env: sample-env
+    # enabled=true  => include catalog ConfigMap and RBAC/Secret wiring for that tenant.
+    # enabled=false => exclude that tenant from publisher runs.
+    # Use this to roll out one tenant at a time.
+    - tenant: sample-env
       enabled: true
       file: sample-env.yaml
       configMapName: lm-serve-model-catalog-sample-env
       namespace: lm-serve
       serviceAccountName: vllm-catalog-model-reconciler
       secretName: lm-serve-sample-env-catalog-credentials
-    - env: small-representative
+    - tenant: small-representative
       enabled: true
       file: small-representative.yaml
       configMapName: lm-serve-model-catalog-small-representative
       namespace: lm-serve-small-representative
       serviceAccountName: vllm-catalog-model-reconciler
       secretName: lm-serve-small-representative-catalog-credentials
-    - env: tiny-smoke
+    - tenant: tiny-smoke
       enabled: true
       file: tiny-smoke.yaml
       configMapName: lm-serve-model-catalog-tiny-smoke
@@ -71,14 +71,14 @@ consumer:
 # 3) Enable only one consumer catalog during phased rollout
 # consumer:
 #   catalogs:
-#     - env: sample-env
+#     - tenant: sample-env
 #       enabled: true
 #       file: sample-env.yaml
 #       configMapName: lm-serve-model-catalog-sample-env
 #       namespace: lm-serve
 #       serviceAccountName: vllm-catalog-model-reconciler
 #       secretName: lm-serve-sample-env-catalog-credentials
-#     - env: small-representative
+#     - tenant: small-representative
 #       enabled: false
 #       file: small-representative.yaml
 #       configMapName: lm-serve-model-catalog-small-representative

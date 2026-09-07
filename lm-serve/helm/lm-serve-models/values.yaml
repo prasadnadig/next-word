@@ -64,18 +64,18 @@ routeConfig:
   configMapName: lm-serve-envoy-routes
   key: routes.yaml
   # Route URL prefix strategy is namespaced-only:
-  # /m/<env-segment>/<model>/
+  # /m/<tenant-segment>/<model>/
   #
-  # Default env segment source:
+  # Default tenant segment source:
   # - Helm release namespace (sanitized to lowercase [a-z0-9-]).
   #
   # Optional namespace-to-alias mapping:
   # - Use when you want a stable shorter alias independent of namespace naming.
   # - Key: namespace name
-  # - Value: env segment alias used in route prefix
-  namespaceEnvSegmentMap: {}
+  # - Value: tenant segment alias used in route prefix
+  namespaceTenantSegmentMap: {}
 
   # Example mappings:
-  # namespaceEnvSegmentMap:
+  # namespaceTenantSegmentMap:
   #   lm-serve-dev-west: dev
   #   lm-serve-staging-east: stg

@@ -1,4 +1,6 @@
 {{- if .Values.authService.enabled }}
+{{- $apiKeysKey := default "api_keys.txt" .Values.secrets.keys.apiKeys }}
+{{- $jwtSecretsKey := default "jwt_hs256_secrets.txt" .Values.secrets.keys.jwtSecrets }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,9 +31,9 @@ spec:
           name: http
         env:
         - name: API_KEYS_FILE
-          value: {{ printf "/secrets/%s" .Values.secrets.keys.apiKeys | quote }}
-        - name: JWT_SECRET_FILE
-          value: {{ printf "/secrets/%s" .Values.secrets.keys.jwtSecret | quote }}
+          value: {{ printf "/secrets/%s" $apiKeysKey | quote }}
+        - name: JWT_SECRETS_FILE
+          value: {{ printf "/secrets/%s" $jwtSecretsKey | quote }}
         - name: SECRET_RELOAD_INTERVAL_SEC
           value: {{ .Values.authService.secretReloadIntervalSec | quote }}
         volumeMounts:

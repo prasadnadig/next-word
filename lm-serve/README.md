@@ -1,134 +1,215 @@
-# LM Serve Bootstrap Modules
+# LM Serve Module
 
-This directory provides a clean, modular baseline for model publication and vLLM serving on Linode today, while remaining portable to any S3-compatible cloud later.
+This module provides a split-chart, tenant-aware baseline for publishing model artifacts and serving them through vLLM + Envoy with auth controls.
 
-## Modules
+The design goal is simple:
+- Publisher owns source-of-truth model intent.
+- Model runtime consumes published catalogs.
+- Platform owns edge routing/auth integration.
+- Tenants are isolated through namespace + values overlays.
+
+## Summary
+
+- Use `TENANT=<tenant-name>` for tenant-scoped model workflows.
+- Keep publisher installed in its own namespace (commonly `lm-publisher`).
+- Keep one model values overlay per tenant: `helm/lm-serve-models/values.<tenant>.yaml`.
+- Keep one source catalog per tenant: `helm/lm-serve-publisher/catalogs/<tenant>.yaml`.
+
+## Components
 
 - `Makefile`
-  - Convenience targets for build, deploy, model reconciliation, and smoke testing.
-
+  - Primary operator entrypoint for render/apply/reconcile/smoke flows.
 - `helm/lm-serve-auth/`
-  - Dedicated auth service chart for runtime, service, and secret wiring.
-
+  - Auth service runtime and auth secret wiring.
 - `auth-service/`
-  - Tracked Python auth service source, dependencies, and Dockerfile for production image delivery.
-
+  - Python auth service source + image build context.
 - `helm/lm-serve-platform/`
-  - Dedicated Envoy platform chart for edge rollout and auth wiring.
-
+  - Envoy edge and route-aggregation integration.
+- `route-aggregator/`
+  - Route aggregation runtime for multi-namespace route updates.
 - `helm/lm-serve-models/`
-  - Dedicated model-runtime chart that consumes the published catalog and owns rollout plus route-data generation.
-
-- `helm/lm-serve-publisher/`
-  - Dedicated model publisher chart that owns the source model catalogs, publication CronJob, RBAC, and publishing runtime.
-
+  - Model runtime consumer chart + reconciler job.
 - `deploy/`
-  - `deploy_lm_serve_catalog.py`: Model deployment reconciler that reconciles catalog entries into one StatefulSet per model plus shared Envoy edge.
-  - `generate_test_auth_materials.sh`: Helper for initial API key/JWT bootstrap for small-team testing.
-  - `smoke_test_lm_serve_catalog.sh`: End-to-end smoke tester for all enabled models using API key/JWT.
-  - `Dockerfile`: Optional in-cluster runtime image for the model deployment reconciler.
-  - `README-install.md`: Detailed cluster installation and operations guide.
-  - `README-inference-usage.md`: End-user usage guide (API key/JWT, request examples).
-
+  - Reconciler and smoke helpers used by Make workflows.
+- `helm/lm-serve-publisher/`
+  - Source catalogs, publisher CronJob, RBAC, and consumer catalog scaffolding.
 - `publisher/`
-  - `publish_model_catalog.py`: Model catalog publisher. Downloads source artifacts and publishes with staging + manifest promotion.
-  - `Dockerfile`: Hardened Python 3.12.12 runtime image.
-  - `requirements.txt`: Script dependencies.
-  - `README.md`: Build, deploy, and cron operation guide.
+  - Model artifact publisher source + image build context.
 
-- `helm/lm-serve/`
-  - Legacy shared environment overlays and decomposition notes used during the chart split.
+## Architecture
 
-- `manifests/`
-  - `secrets.examples.yaml`: Example Secrets for object storage, auth, and Hugging Face token.
-  - `model-catalog.configmap.yaml`: Local catalog reference for non-cluster publisher runs.
+```mermaid
+flowchart LR
+  A[Catalog Source Files\nhelm/lm-serve-publisher/catalogs/*.yaml] --> B[Publisher CronJob\nhelm/lm-serve-publisher]
+  B --> C[(S3-Compatible Object Storage)]
+  B --> D[Published Catalog ConfigMaps\nper tenant]
 
-## Cloud-extendable approach
+  D --> E[Model Reconciler Job\nhelm/lm-serve-models]
+  E --> F[Model StatefulSets + Services]
+  E --> G[Route ConfigMap\nroutes.yaml + routes.json]
 
-The implementation is intentionally cloud-neutral at the data layer:
+  G --> H[Route Aggregator\nroute-aggregator]
+  H --> I[Envoy Edge\nhelm/lm-serve-platform]
 
-- Uses S3-compatible APIs, not Linode-specific SDK calls.
-- Uses endpoint + bucket + region from catalog or env.
-- Keeps serving and publishing logic independent of one specific cluster.
+  J[Auth Service\nhelm/lm-serve-auth] --> I
+  K[Client\nAPI key or JWT] --> I
+  I --> F
+```
 
-To move from Linode to another cloud, update storage endpoint, credentials, and any cluster-specific labels/storage classes.
+## Deployment Order
 
-## Architecture proposal: split charts
+```mermaid
+sequenceDiagram
+  participant Op as Operator
+  participant Mk as Makefile
+  participant Auth as lm-serve-auth
+  participant Plat as lm-serve-platform
+  participant Models as lm-serve-models
+  participant Pub as lm-serve-publisher
+  participant K8s as Kubernetes
 
-For independent versioning and release of auth, platform software, and model rollout, see:
+  Op->>Mk: make apply-base TENANT=sample-env
+  Mk->>Auth: helm upgrade --install
+  Mk->>Plat: helm upgrade --install
+  Mk->>Models: helm upgrade --install (reconciler disabled)
+  Mk->>K8s: apply example secrets
 
-- `helm/lm-serve/chart-decomposition-proposal.md`
+  Op->>Mk: make apply-model-reconciler TENANT=sample-env
+  Mk->>Models: enable reconciler job
 
-## Environment values model
+  Op->>Mk: make apply-serve-model TENANT=sample-env
+  Mk->>K8s: run one reconcile pass and wait
 
-The consumer-side model chart uses environment overlays only:
+  Op->>Mk: make smoke-test-api-key or smoke-test-jwt
+```
 
-1. `helm/lm-serve-models/values.yaml`: shared chart defaults, naming, and validation behavior.
-2. `helm/lm-serve-models/values.<env>.yaml`: environment-specific storage endpoints, bucket names, and feature toggles.
+## Tenant Model
 
-The source-of-truth catalog definitions live under the publisher chart instead:
+- `TENANT` selects the model chart overlay file `values.<tenant>.yaml`.
+- `NAMESPACE` controls where model runtime and platform resources land.
+- `AUTH_NAMESPACE` defaults to `TENANT` when set, else `NAMESPACE`.
 
-- `helm/lm-serve-publisher/catalogs/<env>.yaml`
+Auth patterns:
+- Per-tenant auth: `AUTH_NAMESPACE=<tenant-namespace>` per tenant.
+- Shared auth: one shared `AUTH_NAMESPACE` used by multiple tenants.
 
-To add a new environment, copy the publisher catalog and the model runtime override file, then rename them to your environment name.
+## First-Time Happy Path
 
-## Quick start with Make targets
+1. Review available targets.
 
 ```bash
 make help
-make apply-base ENV=sample-env
-make apply-serve-model ENV=sample-env
-make happy-apply ENV=sample-env API_KEY=<api-key>
 ```
 
-## Helm customization workflow
-
-Render templates locally:
+2. Render all charts for your tenant.
 
 ```bash
-make render-helm-template ENV=sample-env
+make render-helm-template TENANT=sample-env
 ```
 
-Apply chart with an override file:
+3. Install baseline components.
 
 ```bash
-make apply-base ENV=sample-env
+make apply-base TENANT=sample-env
 ```
 
-Override individual values from CLI:
+4. Reconcile model runtime from the published catalog.
 
 ```bash
-make apply-model-reconciler MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-serve-model TENANT=sample-env
+```
+
+5. Validate inference path.
+
+```bash
+make smoke-test-api-key API_KEY=<api-key>
+# or
+make smoke-test-jwt JWT_TOKEN=<jwt>
+```
+
+6. Full one-command flow (after image settings are ready).
+
+```bash
+make happy-apply TENANT=sample-env API_KEY=<api-key>
+```
+
+## Recurrent Operator Happy Paths
+
+- Update one tenant runtime settings and apply:
+
+```bash
+make apply-base TENANT=dev-west NAMESPACE=lm-serve-dev-west
+make apply-model-reconciler TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+```
+
+- Keep continuous reconciliation on:
+
+```bash
+make deploy-watch-local TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+```
+
+- Publish artifact catalogs independently:
+
+```bash
 make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
 ```
 
-For continuous in-cluster model reconciliation and periodic model publishing, build/push images and apply manifests:
+## Customization Controls
 
-```bash
-make build-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make push-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make apply-model-reconciler ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make apply-serve-model ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+Core controls:
+- `TENANT`: selects `helm/lm-serve-models/values.<tenant>.yaml`.
+- `NAMESPACE`: target runtime namespace.
+- `AUTH_NAMESPACE`: auth deployment namespace.
+- `HELM_EXTRA_ARGS`: additional Helm flags (`-f`, `--set`, etc).
 
-make build-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
-make push-model-publisher-image PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
-make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
-```
+Image controls:
+- `AUTH_IMAGE`
+- `MODEL_RECONCILER_IMAGE`
+- `ROUTE_AGGREGATOR_IMAGE_REPOSITORY`
+- `ROUTE_AGGREGATOR_IMAGE_TAG`
+- `PUBLISHER_IMAGE`
 
-Publisher install note:
+Reconciler controls:
+- `MODEL_RECONCILER_JOB_NAME`
+- `MODEL_RECONCILER_WATCH_INTERVAL_SEC`
+- `MODEL_SERVICE_TYPE`
+- `CATALOG_CONFIGMAP`
+- `CATALOG_KEY`
 
-- The publisher chart is installed in its own dedicated namespace, typically `lm-publisher`.
-- `ENV` is not required for `make apply-model-publisher` because the canonical publisher catalog registry already lives in `helm/lm-serve-publisher/values.yaml` and the env-specific catalog files are selected there.
-- `ENV` remains necessary for consumer-side chart installs such as `apply-base` and `apply-model-reconciler`.
+Release controls:
+- `FORCE=true`: bypass cluster confirmation prompts.
+- `PUBLISH_IF_MISSING=true`: skip image push when registry already has the tag.
 
-Auth namespace behavior:
+## Tenant Artifacts: Source vs Consumer
 
-- Default: `AUTH_NAMESPACE` follows `ENV`.
-- Override: set `AUTH_NAMESPACE=<namespace>` to use a shared auth deployment across multiple environments.
-- If `AUTH_NAMESPACE` differs from `NAMESPACE`, `make apply-base` applies example secrets to both namespaces.
+- Source-of-truth catalogs:
+  - `helm/lm-serve-publisher/catalogs/<tenant>.yaml`
+- Consumer runtime overlays:
+  - `helm/lm-serve-models/values.<tenant>.yaml`
 
-To pass additional Helm options (for example, extra `-f` files or `--set` flags), use `HELM_EXTRA_ARGS`.
+This separation keeps model intent and runtime policy independently evolvable.
 
-Note: Helm-related Make targets require `ENV=<name>` and automatically layer `helm/lm-serve-models/values.yaml` and `helm/lm-serve-models/values.<env>.yaml`. The source catalog metadata for that environment is expected under `helm/lm-serve-publisher/catalogs/<env>.yaml`.
+## Publisher Notes
 
-Model publisher and model reconciler deployment are supported through the dedicated `helm/lm-serve-publisher/` and `helm/lm-serve-models/` charts.
+- Publisher chart install does not require `TENANT`.
+- Tenant selection for publication is managed in `helm/lm-serve-publisher/values.yaml` via `consumer.catalogs[*].tenant` and `enabled`.
+
+## Cloud Portability
+
+Data-plane portability is intentional:
+- S3-compatible APIs (endpoint/bucket/region) instead of cloud-specific SDK lock-in.
+- Cluster-level portability through chart values and labels.
+
+To move clouds, update:
+- storage endpoint/credentials/bucket conventions
+- storage classes
+- node selectors/tolerations/affinity in tenant overlays
+
+## Related Docs
+
+- `deploy/README-install.md`
+- `deploy/README-inference-usage.md`
+- `README.multiple-tenants.md`
+- `helm/lm-serve-models/README.md`
+- `helm/lm-serve-publisher/README.md`
+- `helm/lm-serve-auth/README.md`

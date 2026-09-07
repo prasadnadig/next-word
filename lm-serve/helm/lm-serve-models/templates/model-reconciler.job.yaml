@@ -1,6 +1,6 @@
 {{- if .Values.modelReconciler.enabled }}
 {{- $routeEnvSegment := .Release.Namespace -}}
-{{- $aliasMap := .Values.routeConfig.namespaceEnvSegmentMap | default dict -}}
+{{- $aliasMap := .Values.routeConfig.namespaceTenantSegmentMap | default dict -}}
 {{- if hasKey $aliasMap .Release.Namespace -}}
 {{- $routeEnvSegment = index $aliasMap .Release.Namespace -}}
 {{- end -}}
@@ -8,7 +8,7 @@
 {{- $routeEnvSegment = regexReplaceAll "^-+" $routeEnvSegment "" -}}
 {{- $routeEnvSegment = regexReplaceAll "-+$" $routeEnvSegment "" -}}
 {{- if eq $routeEnvSegment "" -}}
-{{- fail "routeConfig namespaceEnvSegmentMap produced an empty env segment" -}}
+{{- fail "routeConfig namespaceTenantSegmentMap produced an empty tenant segment" -}}
 {{- end -}}
 apiVersion: v1
 kind: ServiceAccount
@@ -83,7 +83,7 @@ spec:
             - {{ .Values.modelReconciler.args.routeConfigMapName }}
             - --route-key
             - {{ .Values.modelReconciler.args.routeConfigKey }}
-            - --route-env-segment
+            - --route-tenant-segment
             - {{ $routeEnvSegment | quote }}
             - --model-service-type
             - {{ .Values.modelReconciler.args.modelServiceType }}

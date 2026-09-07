@@ -1,16 +1,16 @@
-# tiny-smoke environment profile
+# tiny-smoke tenant profile
 #
 # Purpose:
 # - Consumer-side deployment profile for the model-runtime chart.
 # - The source-of-truth model catalog is owned by the publisher under
 #   `lm-serve-publisher/catalogs/*.yaml`.
-# - This file configures storage and runtime settings for the consuming environment.
+# - This file configures storage and runtime settings for the consuming tenant.
 #
 # The actual model list and serving definitions live in publisher-managed catalog
 # files instead of here.
 #
 # Historical note:
-# - Provide a very low-footprint environment profile for smoke-testing a new
+# - Provide a very low-footprint tenant profile for smoke-testing a new
 #   inference service where minimal model size matters more than output quality.
 #
 # Why this fits:
@@ -28,7 +28,7 @@
 
 catalog:
   storage:
-    # Replace with a dedicated object storage bucket for this smoke environment.
+    # Replace with a dedicated object storage bucket for this smoke tenant.
     bucket: my-tiny-smoke-llm-model-bucket
     endpoint: https://us-ord-1.linodeobjects.com
     region: us-east-1

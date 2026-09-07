@@ -27,15 +27,15 @@ Make-based shortcut:
 
 ```bash
 cd ..
-make apply-base ENV=sample-env
-make apply-serve-model ENV=sample-env
+make apply-base TENANT=sample-env
+make apply-serve-model TENANT=sample-env
 ```
 
 Auth namespace selection:
 
-- Default behavior: `AUTH_NAMESPACE` follows `ENV` (for `ENV=sample-env`, auth deploys to `sample-env`).
+- Default behavior: `AUTH_NAMESPACE` follows `TENANT` (for `TENANT=sample-env`, auth deploys to `sample-env`).
 - To keep auth per workload namespace instead, run with `AUTH_NAMESPACE=<workload-namespace>`.
-- To share one auth deployment across multiple workload namespaces, set the same `AUTH_NAMESPACE` value for each environment.
+- To share one auth deployment across multiple workload namespaces, set the same `AUTH_NAMESPACE` value for each tenant.
 
 Equivalent explicit workflow:
 
@@ -97,7 +97,7 @@ make push-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-
 ```bash
 cd ..
 make apply-serve-model \
-  ENV=sample-env \
+  TENANT=sample-env \
   MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 ```
 
@@ -133,7 +133,7 @@ To continuously pick up ConfigMap changes:
 ```bash
 cd ..
 make deploy-watch-local \
-  ENV=sample-env \
+  TENANT=sample-env \
   MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 ```
 
@@ -164,7 +164,7 @@ Make-based variant:
 cd ..
 make build-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 make push-model-reconciler-image MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make apply-model-reconciler ENV=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-model-reconciler TENANT=sample-env MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 ```
 
 ## Smoke test all enabled models

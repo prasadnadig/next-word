@@ -76,8 +76,8 @@ class Catalog:
 
 
 @dataclasses.dataclass(frozen=True)
-class EnvironmentCatalog:
-    env: str
+class TenantCatalog:
+    tenant: str
     namespace: str
     configmap_name: str
     key: str
@@ -86,21 +86,21 @@ class EnvironmentCatalog:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Publish model artifacts to S3-compatible storage")
-    parser.add_argument("--catalog-file", action="append", default=[], help="Path to a local catalog YAML file; repeat for multiple env-specific catalogs")
-    parser.add_argument("--catalog-env-file", action="append", default=[], help="Repeatable env=path mapping for per-env catalogs (example: --catalog-env-file dev=./dev.yaml)")
-    parser.add_argument("--env", default="default", help="Environment name used when a single catalog is published")
-    parser.add_argument("--catalog-configmap", action="append", default=[], help="ConfigMap name to read; repeat for multiple env-specific catalogs")
-    parser.add_argument("--catalog-env", action="append", default=[], help="Environment name corresponding to each --catalog-configmap value")
-    parser.add_argument("--catalog-configmap-prefix", default="lm-serve-model-catalog", help="Prefix used for generated env-specific ConfigMaps")
+    parser.add_argument("--catalog-file", action="append", default=[], help="Path to a local catalog YAML file; repeat for multiple tenant-specific catalogs")
+    parser.add_argument("--catalog-tenant-file", action="append", default=[], help="Repeatable tenant=path mapping for per-tenant catalogs (example: --catalog-tenant-file dev=./dev.yaml)")
+    parser.add_argument("--tenant", default="default", help="Tenant name used when a single catalog is published")
+    parser.add_argument("--catalog-configmap", action="append", default=[], help="ConfigMap name to read; repeat for multiple tenant-specific catalogs")
+    parser.add_argument("--catalog-tenant", action="append", default=[], help="Tenant name corresponding to each --catalog-configmap value")
+    parser.add_argument("--catalog-configmap-prefix", default="lm-serve-model-catalog", help="Prefix used for generated tenant-specific ConfigMaps")
     parser.add_argument("--catalog-namespace", default="lm-serve", help="ConfigMap namespace")
-    parser.add_argument("--target-namespace", default="", help="Namespace to write generated per-env catalog ConfigMaps into")
+    parser.add_argument("--target-namespace", default="", help="Namespace to write generated per-tenant catalog ConfigMaps into")
     parser.add_argument("--catalog-key", default="models.yaml", help="ConfigMap data key")
     parser.add_argument("--run-id", default="", help="Optional run ID for staging prefix")
     parser.add_argument("--model", default="", help="Optional single model name filter")
     parser.add_argument("--max-models", type=int, default=0, help="Optional cap on number of models to publish")
     parser.add_argument("--prune-staging", action="store_true", help="Delete staging prefix after promotion")
-    parser.add_argument("--shared-artifacts-prefix", default="_shared", help="S3 prefix used for deduplicated artifacts shared across env catalogs")
-    parser.add_argument("--write-env-catalogs", action="store_true", help="Create or update per-env catalog ConfigMaps in the target namespace")
+    parser.add_argument("--shared-artifacts-prefix", default="_shared", help="S3 prefix used for deduplicated artifacts shared across tenant catalogs")
+    parser.add_argument("--write-tenant-catalogs", action="store_true", help="Create or update per-tenant catalog ConfigMaps in the target namespace")
     return parser.parse_args()
 
 
@@ -158,14 +158,14 @@ def parse_catalog(text: str) -> Catalog:
     return Catalog(storage=storage, models=models)
 
 
-def parse_env_catalog_spec(spec: str) -> Tuple[str, str]:
+def parse_tenant_catalog_spec(spec: str) -> Tuple[str, str]:
     if "=" in spec:
-        env, path = spec.split("=", 1)
+        tenant, path = spec.split("=", 1)
     elif ":" in spec:
-        env, path = spec.split(":", 1)
+        tenant, path = spec.split(":", 1)
     else:
-        raise ValueError(f"Invalid catalog env spec '{spec}'. Expected ENV=PATH or ENV:PATH")
-    return env.strip(), path.strip()
+        raise ValueError(f"Invalid catalog tenant spec '{spec}'. Expected TENANT=PATH or TENANT:PATH")
+    return tenant.strip(), path.strip()
 
 
 def model_config_to_dict(model: ModelConfig) -> Dict[str, object]:
@@ -182,7 +182,7 @@ def model_config_to_dict(model: ModelConfig) -> Dict[str, object]:
     }
 
 
-def catalog_to_env_yaml(catalog: Catalog, env: str) -> str:
+def catalog_to_tenant_yaml(catalog: Catalog, tenant: str) -> str:
     payload = {
         "storage": {
             "bucket": catalog.storage.bucket,
@@ -207,17 +207,17 @@ def load_catalog_from_file(path: str) -> Catalog:
     return parse_catalog(text)
 
 
-def load_catalogs(args: argparse.Namespace) -> List[EnvironmentCatalog]:
-    if args.catalog_env_file:
-        entries: List[EnvironmentCatalog] = []
-        for spec in args.catalog_env_file:
-            env, path = parse_env_catalog_spec(spec)
+def load_catalogs(args: argparse.Namespace) -> List[TenantCatalog]:
+    if args.catalog_tenant_file:
+        entries: List[TenantCatalog] = []
+        for spec in args.catalog_tenant_file:
+            tenant, path = parse_tenant_catalog_spec(spec)
             catalog = load_catalog_from_file(path)
             namespace = args.target_namespace or args.catalog_namespace
-            configmap_name = f"{args.catalog_configmap_prefix}-{env}"
+            configmap_name = f"{args.catalog_configmap_prefix}-{tenant}"
             entries.append(
-                EnvironmentCatalog(
-                    env=env,
+                TenantCatalog(
+                    tenant=tenant,
                     namespace=namespace,
                     configmap_name=configmap_name,
                     key=args.catalog_key,
@@ -228,13 +228,13 @@ def load_catalogs(args: argparse.Namespace) -> List[EnvironmentCatalog]:
 
     if args.catalog_file:
         if len(args.catalog_file) > 1:
-            raise ValueError("Use --catalog-env-file ENV=PATH for multiple catalogs. The single --catalog-file path is for one catalog only.")
+            raise ValueError("Use --catalog-tenant-file TENANT=PATH for multiple catalogs. The single --catalog-file path is for one catalog only.")
         catalog = load_catalog_from_file(args.catalog_file[0])
         namespace = args.target_namespace or args.catalog_namespace
-        configmap_name = (args.catalog_configmap[0] if args.catalog_configmap else f"{args.catalog_configmap_prefix}-{args.env}")
+        configmap_name = (args.catalog_configmap[0] if args.catalog_configmap else f"{args.catalog_configmap_prefix}-{args.tenant}")
         return [
-            EnvironmentCatalog(
-                env=args.env,
+            TenantCatalog(
+                tenant=args.tenant,
                 namespace=namespace,
                 configmap_name=configmap_name,
                 key=args.catalog_key,
@@ -243,13 +243,13 @@ def load_catalogs(args: argparse.Namespace) -> List[EnvironmentCatalog]:
         ]
 
     if args.catalog_configmap:
-        if args.catalog_env and len(args.catalog_env) != len(args.catalog_configmap):
-            raise ValueError("The number of --catalog-env values must match the number of --catalog-configmap values")
+        if args.catalog_tenant and len(args.catalog_tenant) != len(args.catalog_configmap):
+            raise ValueError("The number of --catalog-tenant values must match the number of --catalog-configmap values")
 
         names = args.catalog_configmap
-        env_names = args.catalog_env or [args.env for _ in names]
-        entries: List[EnvironmentCatalog] = []
-        for name, env_name in zip(names, env_names):
+        tenant_names = args.catalog_tenant or [args.tenant for _ in names]
+        entries: List[TenantCatalog] = []
+        for name, tenant_name in zip(names, tenant_names):
             text = load_catalog_text_from_configmap(
                 namespace=args.catalog_namespace,
                 name=name,
@@ -257,8 +257,8 @@ def load_catalogs(args: argparse.Namespace) -> List[EnvironmentCatalog]:
             )
             catalog = parse_catalog(text)
             entries.append(
-                EnvironmentCatalog(
-                    env=env_name,
+                TenantCatalog(
+                    tenant=tenant_name,
                     namespace=args.target_namespace or args.catalog_namespace,
                     configmap_name=name,
                     key=args.catalog_key,
@@ -275,8 +275,8 @@ def load_catalogs(args: argparse.Namespace) -> List[EnvironmentCatalog]:
     )
     catalog = parse_catalog(text)
     return [
-        EnvironmentCatalog(
-            env=args.env,
+        TenantCatalog(
+            tenant=args.tenant,
             namespace=args.target_namespace or args.catalog_namespace,
             configmap_name=default_configmap_name,
             key=args.catalog_key,
@@ -315,13 +315,13 @@ def upsert_configmap(namespace: str, name: str, key: str, value: str) -> None:
             raise
 
 
-def write_env_catalogs(env_catalogs: Iterable[EnvironmentCatalog]) -> None:
-    for env_catalog in env_catalogs:
-        rendered = catalog_to_env_yaml(env_catalog.catalog, env_catalog.env)
+def write_tenant_catalogs(tenant_catalogs: Iterable[TenantCatalog]) -> None:
+    for tenant_catalog in tenant_catalogs:
+        rendered = catalog_to_tenant_yaml(tenant_catalog.catalog, tenant_catalog.tenant)
         upsert_configmap(
-            namespace=env_catalog.namespace,
-            name=env_catalog.configmap_name,
-            key=env_catalog.key,
+            namespace=tenant_catalog.namespace,
+            name=tenant_catalog.configmap_name,
+            key=tenant_catalog.key,
             value=rendered,
         )
 
@@ -540,30 +540,30 @@ def filtered_models(args: argparse.Namespace, models: Iterable[ModelConfig]) -> 
 
 def main() -> None:
     args = parse_args()
-    env_catalogs = load_catalogs(args)
-    if not env_catalogs:
+    tenant_catalogs = load_catalogs(args)
+    if not tenant_catalogs:
         raise SystemExit("No catalog inputs were provided")
 
-    primary_catalog = env_catalogs[0].catalog
+    primary_catalog = tenant_catalogs[0].catalog
     s3 = s3_client(primary_catalog.storage)
 
-    if args.write_env_catalogs:
+    if args.write_tenant_catalogs:
         target_namespace = args.target_namespace or args.catalog_namespace
-        for env_catalog in env_catalogs:
-            env_catalog = dataclasses.replace(env_catalog, namespace=target_namespace)
-            write_env_catalogs([env_catalog])
+        for tenant_catalog in tenant_catalogs:
+            tenant_catalog = dataclasses.replace(tenant_catalog, namespace=target_namespace)
+            write_tenant_catalogs([tenant_catalog])
 
     run_id = args.run_id.strip() or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     shared_uploads: set = set()
 
-    for env_catalog in env_catalogs:
-        catalog = env_catalog.catalog
+    for tenant_catalog in tenant_catalogs:
+        catalog = tenant_catalog.catalog
         selected = filtered_models(args, catalog.models)
         if not selected:
-            print(f"[INFO] No enabled models selected for env {env_catalog.env}; skipping")
+            print(f"[INFO] No enabled models selected for tenant {tenant_catalog.tenant}; skipping")
             continue
 
-        print(f"[INFO] Starting publish run {run_id} for env {env_catalog.env} with {len(selected)} model(s)")
+        print(f"[INFO] Starting publish run {run_id} for tenant {tenant_catalog.tenant} with {len(selected)} model(s)")
         for model in selected:
             publish_model(
                 s3=s3,

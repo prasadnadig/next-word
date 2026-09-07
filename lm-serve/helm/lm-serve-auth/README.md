@@ -20,6 +20,7 @@ This chart supports two credential wiring modes.
 ### 1) `mode: create`
 
 Use when you want this chart to create auth secret data.
+The chart builds file-based auth credentials by combining all enabled `secrets.catalogs` entries.
 
 ```yaml
 secrets:
@@ -27,15 +28,19 @@ secrets:
 	existingSecretName: lm-serve-auth-secrets
 	keys:
 		apiKeys: api_keys.txt
-		jwtSecret: jwt_hs256_secret
-	apiKeys:
-		- team-dev-key-1
-	jwtSecret: replace-with-strong-hs256-secret
+		jwtSecrets: jwt_hs256_secrets.txt
+	catalogs:
+		- tenant: sample-env
+			enabled: true
+			apiKeys:
+				- team-dev-key-1
+			jwtSecrets:
+				- replace-with-strong-hs256-secret
 ```
 
 Behavior impact:
 - Chart renders a Kubernetes Secret.
-- Auth service reads API keys and JWT secret from mounted files.
+- Auth service reads API keys and JWT secrets from mounted files.
 
 ### 2) `mode: existingSecret`
 
@@ -47,22 +52,22 @@ secrets:
 	existingSecretName: prod-auth-secrets
 	keys:
 		apiKeys: api_keys.txt
-		jwtSecret: jwt_hs256_secret
+		jwtSecrets: jwt_hs256_secrets.txt
 ```
 
 Behavior impact:
 - Chart does not create a Secret.
 - Deployment references an existing Secret by name.
 
-## Sample environment
+## Canonical values registry
 
-This chart includes these environment overlays:
+The base [values.yaml](values.yaml) is now the canonical multi-tenant registry for auth credentials:
 
-- [values.sample-env.yaml](values.sample-env.yaml)
-- [values.small-representative.yaml](values.small-representative.yaml)
-- [values.tiny-smoke.yaml](values.tiny-smoke.yaml)
+- Add or disable entries under `secrets.catalogs`.
+- Each enabled tenant contributes keys/secrets to the generated secret files.
+- This chart no longer requires tenant-specific values overlays for Make-based rendering.
 
-Each overlay enables chart-managed secret creation for testing and is selected via `ENV` in the Make workflow.
+The auth chart can still be overridden with extra files or `--set`, but `TENANT` is not required for auth chart rendering.
 
 ## Delivery workflow
 
