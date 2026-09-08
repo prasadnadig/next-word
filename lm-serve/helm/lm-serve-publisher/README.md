@@ -1,6 +1,6 @@
 # lm-serve-publisher
 
-This chart owns the source model catalogs, the publisher CronJob, RBAC, and secret wiring for catalog publication.
+This chart owns the source model catalogs, the publisher CronJob, and publisher RBAC for catalog publication.
 
 ## Ownership boundary
 
@@ -10,7 +10,7 @@ The source catalog definitions live in [catalogs](catalogs/). Those files are th
 - `catalogs/small-representative.yaml` - small representative tenant catalog
 - `catalogs/tiny-smoke.yaml` - smoke-test tenant catalog
 
-These catalog definitions are published into the namespace where consumers read them. The model-runtime chart consumes the published catalog; it does not define the input catalog source.
+These catalog definitions are published to object storage as tenant catalog files. The model-runtime chart consumes those published catalog artifacts; it does not define the input catalog source.
 
 ## Owned resources
 
@@ -19,6 +19,13 @@ These catalog definitions are published into the namespace where consumers read 
 - Publisher Role and RoleBinding
 - Publisher CronJob
 - Publisher runtime image settings
+
+Not owned by this chart:
+
+- Reconciler object-storage pull secrets
+- Reconciler cross-namespace secret RBAC
+
+Those are intentionally owned by the models/reconciler chart to keep publisher and reconciler decoupled.
 
 ## Canonical values
 

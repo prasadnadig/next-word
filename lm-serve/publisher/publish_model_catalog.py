@@ -1,16 +1,42 @@
 #!/usr/bin/env python3
-"""Publishes model artifacts from source to S3-compatible storage.
+"""Publishes tenant-scoped model artifacts to S3-compatible storage.
 
-This script reads the same model catalog used by the model deployment reconciler and pushes
-model artifacts to an object-storage staging prefix, then promotes them via a
-manifest pointer for stronger consistency guarantees.
+This script reads source catalog definitions for one or more tenants, downloads
+model artifacts, uploads them to object storage, and writes published tenant
+catalog files consumed by the Python model deployment reconciler.
+
+Publication uses shared-artifact deduplication plus manifest-pointer promotion
+so serving paths only observe fully published model revisions.
+
+Input mode design (why two modes exist):
+
+1) File mode (`--catalog-tenant-file TENANT=PATH`, repeatable)
+     Use when running locally, in CI, or across clusters where tenant catalog
+     YAML files are available on disk.
+     Example:
+         python3 publish_model_catalog.py \
+             --catalog-tenant-file dev-west=./catalogs/dev-west.yaml \
+             --catalog-tenant-file staging=./catalogs/staging.yaml
+
+2) ConfigMap mode (`--catalog-configmap NAME` + `--catalog-tenant TENANT`, repeatable pairs)
+     Use for in-cluster publisher runs where source catalogs are already materialized
+     as ConfigMaps and should be fetched from Kubernetes API.
+     Example:
+         python3 publish_model_catalog.py \
+             --catalog-namespace lm-serve \
+             --catalog-configmap lm-serve-model-catalog-dev-west \
+             --catalog-tenant dev-west \
+             --catalog-configmap lm-serve-model-catalog-staging \
+             --catalog-tenant staging
+
+The modes are mutually exclusive by design to keep operator intent explicit.
 
 Supported source types:
 - huggingface
 
 Catalog expectations:
 storage:
-    bucket: my-lm-serve-models
+  bucket: my-lm-serve-models
   endpoint: https://us-ord-1.linodeobjects.com
   region: us-east-1
 models:
@@ -36,12 +62,15 @@ import os
 import pathlib
 import tempfile
 import uuid
+import re
+from urllib.parse import urlparse
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import boto3
 import yaml
 
 from botocore.client import BaseClient
+from botocore.exceptions import ClientError
 from huggingface_hub import snapshot_download
 from kubernetes import client, config
 
@@ -84,24 +113,101 @@ class TenantCatalog:
     catalog: Catalog
 
 
+AUTH_ERROR_CODES = {
+    "AccessDenied",
+    "AccessDeniedException",
+    "InvalidAccessKeyId",
+    "InvalidToken",
+    "SignatureDoesNotMatch",
+    "TokenRefreshRequired",
+    "UnrecognizedClientException",
+    "ExpiredToken",
+    "ExpiredTokenException",
+}
+
+
+def is_auth_error(exc: Exception) -> bool:
+    if not isinstance(exc, ClientError):
+        return False
+    error = exc.response.get("Error", {})
+    code = str(error.get("Code", ""))
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in AUTH_ERROR_CODES or status == 401 or status == 403
+
+
+class S3ClientPool:
+    def __init__(self, clients: List[BaseClient]):
+        if not clients:
+            raise ValueError("At least one S3 client is required")
+        self._clients = clients
+        self._preferred_index = 0
+
+    def call(self, operation: str, fn):
+        ordered_indexes = [self._preferred_index] + [
+            i for i in range(len(self._clients)) if i != self._preferred_index
+        ]
+        last_auth_exc: Optional[Exception] = None
+        for index in ordered_indexes:
+            s3 = self._clients[index]
+            try:
+                result = fn(s3)
+                self._preferred_index = index
+                return result
+            except Exception as exc:  # noqa: BLE001
+                if is_auth_error(exc):
+                    last_auth_exc = exc
+                    if len(self._clients) > 1:
+                        print(
+                            f"[WARN] S3 auth failed during {operation} on credential slot {index + 1}; trying next credential"
+                        )
+                    continue
+                raise
+
+        if last_auth_exc is not None:
+            raise RuntimeError(f"All configured S3 credentials failed authentication during {operation}") from last_auth_exc
+        raise RuntimeError(f"S3 operation failed without authentication fallback path: {operation}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Publish model artifacts to S3-compatible storage")
-    parser.add_argument("--catalog-file", action="append", default=[], help="Path to a local catalog YAML file; repeat for multiple tenant-specific catalogs")
-    parser.add_argument("--catalog-tenant-file", action="append", default=[], help="Repeatable tenant=path mapping for per-tenant catalogs (example: --catalog-tenant-file dev=./dev.yaml)")
-    parser.add_argument("--tenant", default="default", help="Tenant name used when a single catalog is published")
-    parser.add_argument("--catalog-configmap", action="append", default=[], help="ConfigMap name to read; repeat for multiple tenant-specific catalogs")
-    parser.add_argument("--catalog-tenant", action="append", default=[], help="Tenant name corresponding to each --catalog-configmap value")
+    parser.add_argument("--catalog-tenant-file", action="append", default=[], help="Repeatable tenant=path mapping for tenant catalog files (example: --catalog-tenant-file dev=./dev.yaml)")
+    parser.add_argument("--catalog-configmap", action="append", default=[], help="Repeatable source ConfigMap names for ConfigMap mode; each entry must pair with one --catalog-tenant")
+    parser.add_argument("--catalog-tenant", action="append", default=[], help="Repeatable tenant labels paired positionally with --catalog-configmap entries")
     parser.add_argument("--catalog-configmap-prefix", default="lm-serve-model-catalog", help="Prefix used for generated tenant-specific ConfigMaps")
     parser.add_argument("--catalog-namespace", default="lm-serve", help="ConfigMap namespace")
-    parser.add_argument("--target-namespace", default="", help="Namespace to write generated per-tenant catalog ConfigMaps into")
     parser.add_argument("--catalog-key", default="models.yaml", help="ConfigMap data key")
     parser.add_argument("--run-id", default="", help="Optional run ID for staging prefix")
     parser.add_argument("--model", default="", help="Optional single model name filter")
     parser.add_argument("--max-models", type=int, default=0, help="Optional cap on number of models to publish")
-    parser.add_argument("--prune-staging", action="store_true", help="Delete staging prefix after promotion")
+    parser.add_argument(
+        "--prune-staging",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete staging prefix after promotion (default: true; use --no-prune-staging to keep staged objects)",
+    )
     parser.add_argument("--shared-artifacts-prefix", default="_shared", help="S3 prefix used for deduplicated artifacts shared across tenant catalogs")
-    parser.add_argument("--write-tenant-catalogs", action="store_true", help="Create or update per-tenant catalog ConfigMaps in the target namespace")
-    return parser.parse_args()
+    parser.add_argument("--published-catalogs-prefix", default="published-catalogs", help="Object storage prefix for published per-tenant catalog files")
+    parser.add_argument("--published-catalog-key", default="models.yaml", help="Filename written for each published tenant catalog under published-catalogs-prefix")
+    args = parser.parse_args()
+
+    has_file_mode = bool(args.catalog_tenant_file)
+    has_configmap_mode = bool(args.catalog_configmap)
+
+    if has_file_mode and has_configmap_mode:
+        parser.error("--catalog-tenant-file and --catalog-configmap/--catalog-tenant modes are mutually exclusive")
+    if not has_file_mode and not has_configmap_mode:
+        parser.error("one input mode is required: --catalog-tenant-file or --catalog-configmap with --catalog-tenant")
+
+    if has_file_mode and args.catalog_tenant:
+        parser.error("--catalog-tenant is only valid with --catalog-configmap mode")
+
+    if has_configmap_mode:
+        if not args.catalog_tenant:
+            parser.error("--catalog-configmap mode requires --catalog-tenant entries")
+        if len(args.catalog_tenant) != len(args.catalog_configmap):
+            parser.error("the number of --catalog-tenant values must match --catalog-configmap values")
+
+    return args
 
 
 def load_catalog_text_from_configmap(namespace: str, name: str, key: str) -> str:
@@ -124,10 +230,37 @@ def parse_catalog(text: str) -> Catalog:
         raise ValueError("Catalog must be a YAML mapping")
 
     storage_raw = raw.get("storage", {})
+    if not isinstance(storage_raw, dict):
+        raise ValueError("storage must be a mapping")
+
+    bucket = str(storage_raw.get("bucket", "")).strip()
+    endpoint = str(storage_raw.get("endpoint", "")).strip()
+    region = str(storage_raw.get("region", "")).strip()
+
+    if not bucket:
+        raise ValueError("storage.bucket is required and cannot be empty")
+    if not endpoint:
+        raise ValueError("storage.endpoint is required and cannot be empty")
+    if not region:
+        raise ValueError("storage.region is required and cannot be empty")
+
+    parsed_endpoint = urlparse(endpoint)
+    if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.netloc:
+        raise ValueError(
+            "storage.endpoint must be a valid absolute URL with http/https scheme "
+            f"(received: {endpoint!r})"
+        )
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", region):
+        raise ValueError(
+            "storage.region must be 1-63 characters, alphanumeric or hyphen, and start with an alphanumeric "
+            f"(received: {region!r})"
+        )
+
     storage = StorageConfig(
-        bucket=str(storage_raw["bucket"]),
-        endpoint=str(storage_raw["endpoint"]),
-        region=str(storage_raw.get("region", "us-east-1")),
+        bucket=bucket,
+        endpoint=endpoint,
+        region=region,
     )
 
     models_raw = raw.get("models", [])
@@ -165,7 +298,13 @@ def parse_tenant_catalog_spec(spec: str) -> Tuple[str, str]:
         tenant, path = spec.split(":", 1)
     else:
         raise ValueError(f"Invalid catalog tenant spec '{spec}'. Expected TENANT=PATH or TENANT:PATH")
-    return tenant.strip(), path.strip()
+    tenant = tenant.strip()
+    path = path.strip()
+    if not tenant:
+        raise ValueError(f"Invalid catalog tenant spec '{spec}'. Tenant name cannot be empty")
+    if not path:
+        raise ValueError(f"Invalid catalog tenant spec '{spec}'. Catalog path cannot be empty")
+    return tenant, path
 
 
 def model_config_to_dict(model: ModelConfig) -> Dict[str, object]:
@@ -213,12 +352,11 @@ def load_catalogs(args: argparse.Namespace) -> List[TenantCatalog]:
         for spec in args.catalog_tenant_file:
             tenant, path = parse_tenant_catalog_spec(spec)
             catalog = load_catalog_from_file(path)
-            namespace = args.target_namespace or args.catalog_namespace
             configmap_name = f"{args.catalog_configmap_prefix}-{tenant}"
             entries.append(
                 TenantCatalog(
                     tenant=tenant,
-                    namespace=namespace,
+                    namespace=args.catalog_namespace,
                     configmap_name=configmap_name,
                     key=args.catalog_key,
                     catalog=catalog,
@@ -226,28 +364,9 @@ def load_catalogs(args: argparse.Namespace) -> List[TenantCatalog]:
             )
         return entries
 
-    if args.catalog_file:
-        if len(args.catalog_file) > 1:
-            raise ValueError("Use --catalog-tenant-file TENANT=PATH for multiple catalogs. The single --catalog-file path is for one catalog only.")
-        catalog = load_catalog_from_file(args.catalog_file[0])
-        namespace = args.target_namespace or args.catalog_namespace
-        configmap_name = (args.catalog_configmap[0] if args.catalog_configmap else f"{args.catalog_configmap_prefix}-{args.tenant}")
-        return [
-            TenantCatalog(
-                tenant=args.tenant,
-                namespace=namespace,
-                configmap_name=configmap_name,
-                key=args.catalog_key,
-                catalog=catalog,
-            )
-        ]
-
     if args.catalog_configmap:
-        if args.catalog_tenant and len(args.catalog_tenant) != len(args.catalog_configmap):
-            raise ValueError("The number of --catalog-tenant values must match the number of --catalog-configmap values")
-
         names = args.catalog_configmap
-        tenant_names = args.catalog_tenant or [args.tenant for _ in names]
+        tenant_names = args.catalog_tenant
         entries: List[TenantCatalog] = []
         for name, tenant_name in zip(names, tenant_names):
             text = load_catalog_text_from_configmap(
@@ -258,8 +377,8 @@ def load_catalogs(args: argparse.Namespace) -> List[TenantCatalog]:
             catalog = parse_catalog(text)
             entries.append(
                 TenantCatalog(
-                    tenant=tenant_name,
-                    namespace=args.target_namespace or args.catalog_namespace,
+                    tenant=tenant_name.strip(),
+                    namespace=args.catalog_namespace,
                     configmap_name=name,
                     key=args.catalog_key,
                     catalog=catalog,
@@ -267,79 +386,74 @@ def load_catalogs(args: argparse.Namespace) -> List[TenantCatalog]:
             )
         return entries
 
-    default_configmap_name = "lm-serve-model-catalog"
-    text = load_catalog_text_from_configmap(
-        namespace=args.catalog_namespace,
-        name=default_configmap_name,
-        key=args.catalog_key,
+    raise ValueError("No catalog inputs were provided")
+
+
+def s3_client_pool(storage: StorageConfig) -> S3ClientPool:
+    credential_candidates: List[Tuple[str, str]] = []
+
+    primary_access_key = os.environ.get("S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
+    primary_secret_key = os.environ.get("S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if primary_access_key and primary_secret_key:
+        credential_candidates.append((primary_access_key, primary_secret_key))
+
+    secondary_access_key = (
+        os.environ.get("S3_ACCESS_KEY_ID_B")
+        or os.environ.get("AWS_ACCESS_KEY_ID_B")
+        or os.environ.get("S3_ACCESS_KEY_ID_2")
+        or os.environ.get("AWS_ACCESS_KEY_ID_2")
     )
-    catalog = parse_catalog(text)
-    return [
-        TenantCatalog(
-            tenant=args.tenant,
-            namespace=args.target_namespace or args.catalog_namespace,
-            configmap_name=default_configmap_name,
-            key=args.catalog_key,
-            catalog=catalog,
+    secondary_secret_key = (
+        os.environ.get("S3_SECRET_ACCESS_KEY_B")
+        or os.environ.get("AWS_SECRET_ACCESS_KEY_B")
+        or os.environ.get("S3_SECRET_ACCESS_KEY_2")
+        or os.environ.get("AWS_SECRET_ACCESS_KEY_2")
+    )
+    if secondary_access_key and secondary_secret_key:
+        secondary_pair = (secondary_access_key, secondary_secret_key)
+        if secondary_pair not in credential_candidates:
+            credential_candidates.append(secondary_pair)
+
+    if not credential_candidates:
+        raise ValueError(
+            "Missing S3 credentials in env. Provide S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY and optionally "
+            "S3_ACCESS_KEY_ID_B/S3_SECRET_ACCESS_KEY_B"
         )
+
+    clients = [
+        boto3.client(
+            "s3",
+            endpoint_url=storage.endpoint,
+            region_name=storage.region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+        )
+        for access_key, secret_key in credential_candidates
     ]
+    return S3ClientPool(clients)
 
 
-def upsert_configmap(namespace: str, name: str, key: str, value: str) -> None:
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config()
+def publish_tenant_catalog(
+    s3_pool: S3ClientPool,
+    storage: StorageConfig,
+    tenant_catalog: TenantCatalog,
+    output_prefix: str,
+    output_key: str,
+) -> str:
+    prefix = output_prefix.strip("/")
+    key_name = output_key.strip("/")
+    if not prefix:
+        raise ValueError("--published-catalogs-prefix cannot be empty")
+    if not key_name:
+        raise ValueError("--published-catalog-key cannot be empty")
 
-    api = client.CoreV1Api()
-    try:
-        api.read_namespaced_config_map(name=name, namespace=namespace)
-        api.patch_namespaced_config_map(
-            name=name,
-            namespace=namespace,
-            body=client.V1ConfigMap(
-                metadata=client.V1ObjectMeta(name=name, namespace=namespace),
-                data={key: value},
-            ),
-        )
-    except client.exceptions.ApiException as exc:
-        if exc.status == 404:
-            api.create_namespaced_config_map(
-                namespace=namespace,
-                body=client.V1ConfigMap(
-                    metadata=client.V1ObjectMeta(name=name, namespace=namespace),
-                    data={key: value},
-                ),
-            )
-        else:
-            raise
-
-
-def write_tenant_catalogs(tenant_catalogs: Iterable[TenantCatalog]) -> None:
-    for tenant_catalog in tenant_catalogs:
-        rendered = catalog_to_tenant_yaml(tenant_catalog.catalog, tenant_catalog.tenant)
-        upsert_configmap(
-            namespace=tenant_catalog.namespace,
-            name=tenant_catalog.configmap_name,
-            key=tenant_catalog.key,
-            value=rendered,
-        )
-
-
-def s3_client(storage: StorageConfig) -> BaseClient:
-    access_key = os.environ.get("S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get("S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
-
-    if not access_key or not secret_key:
-        raise ValueError("Missing S3 credentials in env (S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY)")
-
-    return boto3.client(
-        "s3",
-        endpoint_url=storage.endpoint,
-        region_name=storage.region,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
+    catalog_key = f"{prefix}/{tenant_catalog.tenant}/{key_name}"
+    body = catalog_to_tenant_yaml(tenant_catalog.catalog, tenant_catalog.tenant).encode("utf-8")
+    s3_pool.call(
+        "put_object(published-catalog)",
+        lambda s3: s3.put_object(Bucket=storage.bucket, Key=catalog_key, Body=body, ContentType="application/x-yaml"),
     )
+    return catalog_key
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -354,21 +468,35 @@ def collect_files(root: pathlib.Path) -> List[pathlib.Path]:
     return [p for p in root.rglob("*") if p.is_file()]
 
 
-def upload_file(s3: BaseClient, bucket: str, key: str, path: pathlib.Path) -> None:
-    s3.upload_file(str(path), bucket, key)
+def upload_file(s3_pool: S3ClientPool, bucket: str, key: str, path: pathlib.Path) -> None:
+    s3_pool.call("upload_file", lambda s3: s3.upload_file(str(path), bucket, key))
 
 
-def list_keys_under_prefix(s3: BaseClient, bucket: str, prefix: str) -> List[str]:
-    keys: List[str] = []
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            keys.append(obj["Key"])
-    return keys
+def object_exists(s3_pool: S3ClientPool, bucket: str, key: str) -> bool:
+    try:
+        s3_pool.call("head_object", lambda s3: s3.head_object(Bucket=bucket, Key=key))
+        return True
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise
+
+
+def list_keys_under_prefix(s3_pool: S3ClientPool, bucket: str, prefix: str) -> List[str]:
+    def _list(s3: BaseClient) -> List[str]:
+        keys: List[str] = []
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                keys.append(obj["Key"])
+        return keys
+
+    return s3_pool.call("list_objects_v2", _list)
 
 
 def copy_keys_between_prefixes(
-    s3: BaseClient,
+    s3_pool: S3ClientPool,
     bucket: str,
     source_prefix: str,
     destination_prefix: str,
@@ -377,21 +505,24 @@ def copy_keys_between_prefixes(
     destination_prefix = destination_prefix.strip("/") + "/"
 
     copied = 0
-    for key in list_keys_under_prefix(s3, bucket, source_prefix):
+    for key in list_keys_under_prefix(s3_pool, bucket, source_prefix):
         suffix = key[len(source_prefix) :]
         dest_key = f"{destination_prefix}{suffix}"
-        s3.copy_object(Bucket=bucket, CopySource={"Bucket": bucket, "Key": key}, Key=dest_key)
+        s3_pool.call(
+            "copy_object",
+            lambda s3: s3.copy_object(Bucket=bucket, CopySource={"Bucket": bucket, "Key": key}, Key=dest_key),
+        )
         copied += 1
     return copied
 
 
-def delete_prefix(s3: BaseClient, bucket: str, prefix: str) -> None:
-    keys = list_keys_under_prefix(s3, bucket, prefix.strip("/") + "/")
+def delete_prefix(s3_pool: S3ClientPool, bucket: str, prefix: str) -> None:
+    keys = list_keys_under_prefix(s3_pool, bucket, prefix.strip("/") + "/")
     if not keys:
         return
     for i in range(0, len(keys), 1000):
         batch = [{"Key": k} for k in keys[i : i + 1000]]
-        s3.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        s3_pool.call("delete_objects", lambda s3: s3.delete_objects(Bucket=bucket, Delete={"Objects": batch}))
 
 
 def build_manifest(
@@ -429,7 +560,7 @@ def resolve_repo_revision(model: ModelConfig) -> str:
 
 
 def publish_model(
-    s3: BaseClient,
+    s3_pool: S3ClientPool,
     storage: StorageConfig,
     model: ModelConfig,
     run_id: str,
@@ -467,22 +598,18 @@ def publish_model(
             sha = file_sha256(file_path)
             size = file_path.stat().st_size
             shared_key = f"{shared_prefix}/{sha}/{rel}"
-            try:
-                s3.head_object(Bucket=storage.bucket, Key=shared_key)
-            except Exception:
-                upload_file(s3, storage.bucket, shared_key, file_path)
+            if not object_exists(s3_pool, storage.bucket, shared_key):
+                upload_file(s3_pool, storage.bucket, shared_key, file_path)
                 shared_uploads.add(shared_key)
             checksummed.append((rel, sha, size, shared_key))
 
             staging_key = f"{staging_prefix}/{rel}"
             if prune_staging:
-                try:
-                    s3.head_object(Bucket=storage.bucket, Key=staging_key)
-                except Exception:
-                    upload_file(s3, storage.bucket, staging_key, file_path)
+                if not object_exists(s3_pool, storage.bucket, staging_key):
+                    upload_file(s3_pool, storage.bucket, staging_key, file_path)
 
         if prune_staging:
-            delete_prefix(s3, storage.bucket, staging_prefix)
+            delete_prefix(s3_pool, storage.bucket, staging_prefix)
 
         manifest = build_manifest(
             model=model,
@@ -494,7 +621,10 @@ def publish_model(
         manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
 
         run_manifest_key = f"{model.storage_prefix}/manifests/{run_id}.json"
-        s3.put_object(Bucket=storage.bucket, Key=run_manifest_key, Body=manifest_bytes, ContentType="application/json")
+        s3_pool.call(
+            "put_object(model-manifest)",
+            lambda s3: s3.put_object(Bucket=storage.bucket, Key=run_manifest_key, Body=manifest_bytes, ContentType="application/json"),
+        )
 
         pointer = {
             "active_manifest": run_manifest_key,
@@ -504,29 +634,12 @@ def publish_model(
         }
         pointer_bytes = json.dumps(pointer, indent=2).encode("utf-8")
         pointer_key = f"{model.storage_prefix}/manifest.json"
-        s3.put_object(Bucket=storage.bucket, Key=pointer_key, Body=pointer_bytes, ContentType="application/json")
+        s3_pool.call(
+            "put_object(manifest-pointer)",
+            lambda s3: s3.put_object(Bucket=storage.bucket, Key=pointer_key, Body=pointer_bytes, ContentType="application/json"),
+        )
 
         print(f"[OK] Published model {model.name}. Manifest: s3://{storage.bucket}/{run_manifest_key}")
-
-
-def load_catalog(args: argparse.Namespace) -> Catalog:
-    if args.catalog_file:
-        text = pathlib.Path(args.catalog_file).read_text(encoding="utf-8")
-        parsed = yaml.safe_load(text)
-        if isinstance(parsed, dict) and parsed.get("kind") == "ConfigMap":
-            data = parsed.get("data", {})
-            if not isinstance(data, dict) or args.catalog_key not in data:
-                raise ValueError(
-                    f"ConfigMap manifest in {args.catalog_file} does not contain data key {args.catalog_key}"
-                )
-            text = str(data[args.catalog_key])
-    else:
-        text = load_catalog_text_from_configmap(
-            namespace=args.catalog_namespace,
-            name=args.catalog_configmap,
-            key=args.catalog_key,
-        )
-    return parse_catalog(text)
 
 
 def filtered_models(args: argparse.Namespace, models: Iterable[ModelConfig]) -> List[ModelConfig]:
@@ -544,20 +657,26 @@ def main() -> None:
     if not tenant_catalogs:
         raise SystemExit("No catalog inputs were provided")
 
-    primary_catalog = tenant_catalogs[0].catalog
-    s3 = s3_client(primary_catalog.storage)
-
-    if args.write_tenant_catalogs:
-        target_namespace = args.target_namespace or args.catalog_namespace
-        for tenant_catalog in tenant_catalogs:
-            tenant_catalog = dataclasses.replace(tenant_catalog, namespace=target_namespace)
-            write_tenant_catalogs([tenant_catalog])
-
     run_id = args.run_id.strip() or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     shared_uploads: set = set()
+    s3_pools: Dict[StorageConfig, S3ClientPool] = {}
 
     for tenant_catalog in tenant_catalogs:
         catalog = tenant_catalog.catalog
+        storage = catalog.storage
+        if storage not in s3_pools:
+            s3_pools[storage] = s3_client_pool(storage)
+        s3_pool = s3_pools[storage]
+
+        catalog_object_key = publish_tenant_catalog(
+            s3_pool=s3_pool,
+            storage=storage,
+            tenant_catalog=tenant_catalog,
+            output_prefix=args.published_catalogs_prefix,
+            output_key=args.published_catalog_key,
+        )
+        print(f"[OK] Published tenant catalog for {tenant_catalog.tenant}: s3://{storage.bucket}/{catalog_object_key}")
+
         selected = filtered_models(args, catalog.models)
         if not selected:
             print(f"[INFO] No enabled models selected for tenant {tenant_catalog.tenant}; skipping")
@@ -566,8 +685,8 @@ def main() -> None:
         print(f"[INFO] Starting publish run {run_id} for tenant {tenant_catalog.tenant} with {len(selected)} model(s)")
         for model in selected:
             publish_model(
-                s3=s3,
-                storage=catalog.storage,
+                s3_pool=s3_pool,
+                storage=storage,
                 model=model,
                 run_id=run_id,
                 prune_staging=args.prune_staging,

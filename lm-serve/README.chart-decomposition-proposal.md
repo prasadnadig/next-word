@@ -39,7 +39,7 @@ This document defines a 4-chart split so auth, platform software, model rollout,
 | Envoy base config | `lm-serve-platform` | Listener, ext_authz, health routes |
 | Envoy route config ConfigMap data | `lm-serve-models` | Model-specific routes/clusters |
 | Source catalog definitions | `lm-serve-publisher` | Source of model intent for each tenant |
-| Published model catalog ConfigMap | `lm-serve-publisher` | Generated artifact consumed by runtime |
+| Published tenant catalog object (S3 path) | `lm-serve-publisher` | Generated artifact consumed by runtime |
 | Model StatefulSets/Services | `lm-serve-models` | Direct templates or reconciler-managed |
 | Model reconciler Job + RBAC | `lm-serve-models` | If using controller pattern |
 | Model publisher CronJob + RBAC | `lm-serve-publisher` | Optional per release |
@@ -189,9 +189,11 @@ routeConfig:
 
 ```yaml
 catalog:
-  enabled: true
+  enabled: false
   name: lm-serve-model-catalog
   key: models.yaml
+  tenant: sample-env
+  publishedPrefix: published-catalogs
   storage:
     bucket: REPLACE_ME_BUCKET
     endpoint: https://us-ord-1.linodeobjects.com
@@ -202,7 +204,6 @@ modelReconciler:
   enabled: true
   image: REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
   args:
-    catalogConfigMapName: lm-serve-model-catalog
     catalogKey: models.yaml
     routeConfigMapName: lm-serve-envoy-routes
     routeConfigKey: routes.yaml
@@ -229,8 +230,6 @@ publisher:
 
 rbac:
   enabled: true
-  catalogConfigMapName: lm-serve-model-catalog
-  catalogNamespace: lm-serve
   s3SecretName: lm-publisher-object-storage-creds
   hfSecretName: lm-publisher-hf-credentials
 ```

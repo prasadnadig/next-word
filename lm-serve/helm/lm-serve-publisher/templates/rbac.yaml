@@ -1,7 +1,20 @@
+{{- /*
+RBAC summary for lm-serve-publisher:
+
+1) Publisher runtime permissions (in .Release.Namespace)
+   - Creates one Role bound to publisher.serviceAccountName.
+   - Grants read access to:
+  - enabled consumer catalog ConfigMaps (resourceNames from publisher.catalogConfigMapPrefix + tenant)
+     - publisher credential Secrets (S3 + HF token secrets)
+   - Creates one RoleBinding that binds this Role to the publisher ServiceAccount.
+
+This structure keeps least privilege boundaries explicit:
+- publisher SA can read only publisher inputs and enabled catalog ConfigMaps.
+*/ -}}
 {{- $catalogNames := list }}
 {{- range .Values.consumer.catalogs }}
 {{- if (default true .enabled) }}
-{{- $catalogNames = append $catalogNames .configMapName }}
+{{- $catalogNames = append $catalogNames (printf "%s-%s" $.Values.publisher.catalogConfigMapPrefix .tenant) }}
 {{- end }}
 {{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -21,7 +34,8 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     resourceNames:
-      - {{ .Values.publisher.credentials.s3SecretName | quote }}
+      - {{ .Values.publisher.credentials.s3SecretNameA | quote }}
+      - {{ .Values.publisher.credentials.s3SecretNameB | quote }}
       - {{ .Values.publisher.credentials.hfSecretName | quote }}
     verbs: ["get"]
 ---
@@ -39,51 +53,3 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ .Values.publisher.serviceAccountName }}
-{{- range .Values.consumer.catalogs }}
-{{- if (default true .enabled) }}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .secretName }}
-  namespace: {{ $.Release.Namespace }}
-  labels:
-    app.kubernetes.io/name: {{ $.Values.publisher.name }}
-    app.kubernetes.io/component: catalog-access
-    app.kubernetes.io/part-of: lm-serve
-    app.kubernetes.io/tenant: {{ .tenant }}
-type: Opaque
-stringData:
-  value: {{ $.Values.consumer.placeholderSecretValue | quote }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ $.Values.publisher.serviceAccountName }}-{{ .tenant }}-secret-read
-  namespace: {{ $.Release.Namespace }}
-  labels:
-{{ include "lm-serve-publisher.labels" $ | indent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames:
-      - {{ .secretName | quote }}
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ $.Values.publisher.serviceAccountName }}-{{ .tenant }}-secret-read
-  namespace: {{ $.Release.Namespace }}
-  labels:
-{{ include "lm-serve-publisher.labels" $ | indent 4 }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ .serviceAccountName }}
-    namespace: {{ .namespace }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ $.Values.publisher.serviceAccountName }}-{{ .tenant }}-secret-read
-{{- end }}
-{{- end }}

@@ -32,7 +32,7 @@ The design goal is simple:
 - `deploy/`
   - Reconciler and smoke helpers used by Make workflows.
 - `helm/lm-serve-publisher/`
-  - Source catalogs, publisher CronJob, RBAC, and consumer catalog scaffolding.
+  - Source catalogs, publisher CronJob, RBAC, and tenant catalog publication.
 - `publisher/`
   - Model artifact publisher source + image build context.
 
@@ -42,7 +42,7 @@ The design goal is simple:
 flowchart LR
   A[Catalog Source Files\nhelm/lm-serve-publisher/catalogs/*.yaml] --> B[Publisher CronJob\nhelm/lm-serve-publisher]
   B --> C[(S3-Compatible Object Storage)]
-  B --> D[Published Catalog ConfigMaps\nper tenant]
+  C --> D[Published Tenant Catalog Files\nper tenant]
 
   D --> E[Model Reconciler Job\nhelm/lm-serve-models]
   E --> F[Model StatefulSets + Services]

@@ -10,6 +10,18 @@
 {{- if eq $routeEnvSegment "" -}}
 {{- fail "routeConfig namespaceTenantSegmentMap produced an empty tenant segment" -}}
 {{- end -}}
+{{- if eq (trim .Values.catalog.tenant) "" -}}
+{{- fail "catalog.tenant must be set for object-storage catalog pull mode" -}}
+{{- end -}}
+{{- if eq (trim .Values.catalog.publishedPrefix) "" -}}
+{{- fail "catalog.publishedPrefix must be set for object-storage catalog pull mode" -}}
+{{- end -}}
+{{- if and .Values.modelReconciler.objectStoragePullSecrets.enabled (eq (trim .Values.modelReconciler.objectStoragePullSecrets.secretNameA) "") -}}
+{{- fail "modelReconciler.objectStoragePullSecrets.secretNameA must be set when objectStoragePullSecrets.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.modelReconciler.objectStoragePullSecrets.enabled (eq (trim .Values.modelReconciler.objectStoragePullSecrets.secretNameB) "") -}}
+{{- fail "modelReconciler.objectStoragePullSecrets.secretNameB must be set when objectStoragePullSecrets.enabled=true" -}}
+{{- end -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -45,6 +57,34 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ .Values.modelReconciler.roleName }}
+{{- if .Values.modelReconciler.objectStoragePullSecrets.enabled }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.modelReconciler.objectStoragePullSecrets.secretNameA }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+    app.kubernetes.io/component: object-storage-pull
+    app.kubernetes.io/role: key-a
+type: Opaque
+stringData:
+  access_key_id: {{ .Values.modelReconciler.objectStoragePullSecrets.placeholderValue | quote }}
+  secret_access_key: {{ .Values.modelReconciler.objectStoragePullSecrets.placeholderValue | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.modelReconciler.objectStoragePullSecrets.secretNameB }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+    app.kubernetes.io/component: object-storage-pull
+    app.kubernetes.io/role: key-b
+type: Opaque
+stringData:
+  access_key_id: {{ .Values.modelReconciler.objectStoragePullSecrets.placeholderValue | quote }}
+  secret_access_key: {{ .Values.modelReconciler.objectStoragePullSecrets.placeholderValue | quote }}
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -75,8 +115,16 @@ spec:
           args:
             - --namespace
             - {{ .Release.Namespace }}
-            - --catalog-configmap
-            - {{ .Values.modelReconciler.args.catalogConfigMapName }}
+            - --catalog-storage-bucket
+            - {{ .Values.catalog.storage.bucket | quote }}
+            - --catalog-storage-endpoint
+            - {{ .Values.catalog.storage.endpoint | quote }}
+            - --catalog-storage-region
+            - {{ .Values.catalog.storage.region | quote }}
+            - --catalog-storage-prefix
+            - {{ .Values.catalog.publishedPrefix | quote }}
+            - --catalog-tenant
+            - {{ .Values.catalog.tenant | quote }}
             - --catalog-key
             - {{ .Values.modelReconciler.args.catalogKey }}
             - --route-configmap
@@ -89,6 +137,13 @@ spec:
             - {{ .Values.modelReconciler.args.modelServiceType }}
             - --watch-interval-sec
             - {{ .Values.modelReconciler.args.watchIntervalSec | quote }}
+            - --s3-secret-a
+            - {{ .Values.modelReconciler.objectStoragePullSecrets.secretNameA }}
+            - --s3-secret-b
+            - {{ .Values.modelReconciler.objectStoragePullSecrets.secretNameB }}
+            - --s3-secret-placeholder-value
+            - {{ .Values.modelReconciler.objectStoragePullSecrets.placeholderValue | quote }}
+            - --require-ready-s3-secret
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -27,6 +27,7 @@
 #   you need stronger performance and behavior representativeness.
 
 catalog:
+  tenant: small-representative
   storage:
     # Replace with tenant-specific object storage for this profile.
     bucket: my-small-representative-llm-model-bucket

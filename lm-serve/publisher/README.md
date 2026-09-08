@@ -1,6 +1,6 @@
 # Model Catalog Publisher Guide
 
-This module packages a Python 3.12.12 model publisher that reads the shared model catalog and pushes artifacts to S3-compatible object storage using staging + manifest promotion.
+This module packages a Python 3.12.12 model publisher that reads tenant source catalogs and publishes both model artifacts and tenant catalog files to S3-compatible object storage.
 
 ## Why staging + promotion
 
@@ -25,11 +25,89 @@ export S3_SECRET_ACCESS_KEY="..."
 export HF_TOKEN="..."
 ```
 
-Run against local catalog file:
+Run against local tenant catalog files:
 
 ```bash
-python3 publish_model_catalog.py --catalog-file ../manifests/model-catalog.configmap.yaml --model mistral-7b-instruct
+python3 publish_model_catalog.py \
+	--catalog-tenant-file sample-env=../helm/lm-serve-publisher/catalogs/sample-env.yaml \
+	--model mistral-7b-instruct
 ```
+
+## Source Catalog Input Modes
+
+Use `--catalog-tenant-file` for file mode.
+
+- Repeat the flag as `TENANT=PATH` pairs.
+- This mode is ideal for local tests, CI, or cross-cluster runs.
+- Example:
+
+```bash
+python3 publish_model_catalog.py \
+	--catalog-tenant-file dev-west=./catalogs/dev-west.yaml \
+	--catalog-tenant-file staging=./catalogs/staging.yaml
+```
+
+Use `--catalog-configmap` with `--catalog-tenant` for source-catalog ConfigMap mode.
+
+- Repeat both flags in matching order.
+- This mode is ideal for in-cluster publishing where source catalogs are already ConfigMaps.
+- Example:
+
+```bash
+python3 publish_model_catalog.py \
+	--catalog-namespace lm-serve \
+	--catalog-configmap lm-serve-model-catalog-dev-west \
+	--catalog-tenant dev-west \
+	--catalog-configmap lm-serve-model-catalog-staging \
+	--catalog-tenant staging
+```
+
+## Namespace Semantics
+
+- `--catalog-namespace`:
+	Namespace used only to read source catalog ConfigMaps in ConfigMap mode.
+	This setting does not control where published tenant catalogs are written.
+
+## Published Tenant Catalog Outputs
+
+Published catalog object path semantics:
+
+- `--published-catalogs-prefix`:
+	Object storage prefix used for tenant catalog output.
+- `--published-catalog-key`:
+	Filename for each tenant catalog object.
+
+Output path shape:
+
+- `s3://<catalog.storage.bucket>/<published-catalogs-prefix>/<tenant>/<published-catalog-key>`
+
+Runtime reconciliation reads this published object-storage catalog artifact, not the source catalog ConfigMap input.
+
+`--catalog-tenant` is only valid with `--catalog-configmap` and is used to map each ConfigMap to its tenant label.
+
+Input mode guardrails:
+
+- `--catalog-tenant-file` mode and `--catalog-configmap` mode are mutually exclusive.
+- One input mode is required.
+- In ConfigMap mode, `--catalog-tenant` count must match `--catalog-configmap` count.
+
+## Storage Validation Requirements
+
+Catalog `storage` now requires explicit and valid values:
+
+- `storage.bucket`: required, non-empty
+- `storage.endpoint`: required, absolute `http://` or `https://` URL
+- `storage.region`: required, non-empty, alphanumeric/hyphen (`[A-Za-z0-9-]`), max length 63
+
+Missing or invalid values fail fast before publication starts. Helm rendering also fails fast when chart values provide invalid endpoint or region.
+
+Publisher writes tenant catalog outputs to the same object storage target as model artifacts for that tenant catalog.
+
+## Prune Staging Default
+
+- Script default: `--prune-staging` is enabled by default.
+- Disable explicitly with `--no-prune-staging`.
+- Helm CronJob passes either `--prune-staging` or `--no-prune-staging` explicitly based on chart values, so behavior is consistent across local and in-cluster runs.
 
 ## Build container image
 
@@ -79,7 +157,9 @@ make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0
 The model publisher can run in the same cluster as vLLM or in another cluster.
 
 - Same cluster: read catalog by ConfigMap API directly.
-- Different cluster: mount or pass exported catalog YAML and use `--catalog-file`.
+- Different cluster: mount or pass tenant catalog YAML files and use `--catalog-tenant-file`.
+
+In both cases, published tenant catalogs are written to object storage and consumed by runtime reconciliation from object storage.
 
 ## Security hardening in Dockerfile
 
@@ -90,7 +170,7 @@ The model publisher can run in the same cluster as vLLM or in another cluster.
 
 ## Operational notes
 
-- Keep source and destination credentials separate.
+- Keep publication credentials least-privileged and rotated.
 - Use bucket prefix scoping per model.
 - Rotate keys and tokens.
 - Validate promoted manifest before changing serving catalog entries.

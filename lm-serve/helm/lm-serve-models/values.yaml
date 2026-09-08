@@ -1,13 +1,17 @@
 catalog:
-  # Enable catalog ConfigMap generation from this chart.
-  # true  => creates catalog ConfigMap payload consumed by model reconciler.
-  # false => chart does not manage catalog ConfigMap.
-  enabled: true
+  # Legacy ConfigMap generation mode.
+  # This is disabled by default because reconciler now pulls catalog from object storage.
+  enabled: false
   name: lm-serve-model-catalog
   key: models.yaml
+  # Tenant key used in publisher output path:
+  # s3://<bucket>/<publishedPrefix>/<tenant>/<key>
+  tenant: sample-env
+  publishedPrefix: published-catalogs
   storage:
-    # Object storage location where model artifacts are published.
-    # bucket/endpoint/region are included in generated catalog payload.
+    # Object storage location where publisher writes tenant catalogs.
+    # Reconciler reads from this location and then consumes model storage details
+    # inside the fetched catalog payload.
     bucket: REPLACE_ME_BUCKET
     endpoint: https://us-ord-1.linodeobjects.com
     region: us-east-1
@@ -33,7 +37,6 @@ modelReconciler:
   image: REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
   imagePullPolicy: IfNotPresent
   args:
-    catalogConfigMapName: lm-serve-model-catalog
     catalogKey: models.yaml
     # Service exposure for model services created by reconciler.
     # - ClusterIP: internal-only traffic via cluster networking.
@@ -45,6 +48,15 @@ modelReconciler:
     # Reconcile interval when running watch mode.
     # Lower values detect catalog changes faster but increase API server churn.
     watchIntervalSec: "60"
+
+  objectStoragePullSecrets:
+    # Reconciler-owned pull secrets for catalog object storage fetches.
+    # Keep both secrets present to support credential rotation without fixed active/standby roles.
+    enabled: true
+    secretNameA: lm-serve-object-storage-creds-a
+    secretNameB: lm-serve-object-storage-creds-b
+    # Reconciler skips processing when neither secret has values different from this placeholder.
+    placeholderValue: REPLACE_ME_SET_REAL_CREDENTIAL
 
     # Service type examples:
     # modelServiceType: ClusterIP

@@ -3,6 +3,7 @@
 # `lm-serve-publisher/catalogs/*.yaml`; this file configures the consumer runtime.
 
 catalog:
+  tenant: sample-env
   storage:
     bucket: my-sample-env-llm-model-bucket
     endpoint: https://us-ord-1.linodeobjects.com

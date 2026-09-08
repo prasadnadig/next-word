@@ -1,10 +1,10 @@
 # lm-serve-models
 
-This chart consumes the published model catalog and owns the model-runtime rollout plus the route artifact contract consumed by Envoy.
+This chart consumes the published tenant catalog from object storage and owns the model-runtime rollout plus the route artifact contract consumed by Envoy.
 
 ## Ownership boundary
 
-The source catalog definitions are owned by the publisher chart under [../lm-serve-publisher/catalogs](../lm-serve-publisher/catalogs/). The models chart consumes the published catalog ConfigMap and turns it into running model resources.
+The source catalog definitions are owned by the publisher chart under [../lm-serve-publisher/catalogs](../lm-serve-publisher/catalogs/). The models chart consumes the published tenant catalog object and turns it into running model resources.
 
 ## Owned resources
 
@@ -56,6 +56,32 @@ modelReconciler:
 Behavior impact:
 - Chart renders reconciliation Job + RBAC.
 - Catalog changes can be reconciled by in-cluster workflow.
+- Chart creates two object-storage pull Secrets (key A + key B) for rotation.
+- Reconciliation is gated until at least one pull Secret has non-placeholder credentials.
+
+Catalog pull contract:
+
+- Reconciler reads `s3://<catalog.storage.bucket>/<catalog.publishedPrefix>/<catalog.tenant>/<modelReconciler.args.catalogKey>`.
+- The fetched YAML includes model artifact storage metadata used by model-sync init containers.
+
+### Object-storage pull secret rotation
+
+The models chart owns pull secrets used by reconciler-generated model-sync init containers.
+
+- `modelReconciler.objectStoragePullSecrets.secretNameA`
+- `modelReconciler.objectStoragePullSecrets.secretNameB`
+- `modelReconciler.objectStoragePullSecrets.placeholderValue`
+
+Default behavior:
+
+- Both Secrets are created with placeholder values.
+- Reconciler skips applying model runtime resources until at least one secret is updated.
+
+Recommended rotation flow:
+
+1. Keep both key A and key B present in the namespace.
+2. Rotate either key at any time.
+3. Reconciler tries one key and automatically falls back to the other on auth errors.
 
 ### 2) Reconciler disabled
 

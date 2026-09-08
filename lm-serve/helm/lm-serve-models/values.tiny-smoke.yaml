@@ -27,6 +27,7 @@
 #   but disable it if you only want manual operations.
 
 catalog:
+  tenant: tiny-smoke
   storage:
     # Replace with a dedicated object storage bucket for this smoke tenant.
     bucket: my-tiny-smoke-llm-model-bucket

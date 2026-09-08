@@ -25,13 +25,19 @@ spec:
                   mountPath: /tmp
               args:
                 - --catalog-namespace
-                - {{ .Values.consumer.catalogNamespace }}
+                - {{ .Release.Namespace }}
                 - --catalog-key
                 - {{ .Values.publisher.catalogKey }}
+                - --published-catalogs-prefix
+                - {{ .Values.publisher.publishedCatalogsPrefix | quote }}
+                - --published-catalog-key
+                - {{ .Values.publisher.publishedCatalogKey | quote }}
                 - --shared-artifacts-prefix
                 - {{ .Values.publisher.sharedArtifactsPrefix | quote }}
                 {{- if .Values.publisher.pruneStaging }}
                 - --prune-staging
+                {{- else }}
+                - --no-prune-staging
                 {{- end }}
                 {{- $enabledCatalogs := list }}
                 {{- range .Values.consumer.catalogs }}
@@ -40,28 +46,34 @@ spec:
                 {{- end }}
                 {{- end }}
                 {{- if not $enabledCatalogs }}
-                - --catalog-configmap
-                - {{ .Values.publisher.catalogConfigMapName }}
-                - --catalog-tenant
-                - default
-                {{- else }}
+                {{- fail "lm-serve-publisher: consumer.catalogs must include at least one enabled tenant for publisher CronJob args" }}
+                {{- end }}
                 {{- range $enabledCatalogs }}
                 - --catalog-configmap
-                - {{ .configMapName }}
+                - {{ $.Values.publisher.catalogConfigMapPrefix }}-{{ .tenant }}
                 - --catalog-tenant
                 - {{ .tenant | quote }}
-                {{- end }}
                 {{- end }}
               env:
                 - name: S3_ACCESS_KEY_ID
                   valueFrom:
                     secretKeyRef:
-                      name: {{ .Values.publisher.credentials.s3SecretName }}
+                      name: {{ .Values.publisher.credentials.s3SecretNameA }}
                       key: access_key_id
                 - name: S3_SECRET_ACCESS_KEY
                   valueFrom:
                     secretKeyRef:
-                      name: {{ .Values.publisher.credentials.s3SecretName }}
+                      name: {{ .Values.publisher.credentials.s3SecretNameA }}
+                      key: secret_access_key
+                - name: S3_ACCESS_KEY_ID_B
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.publisher.credentials.s3SecretNameB }}
+                      key: access_key_id
+                - name: S3_SECRET_ACCESS_KEY_B
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.publisher.credentials.s3SecretNameB }}
                       key: secret_access_key
                 - name: HF_TOKEN
                   valueFrom:

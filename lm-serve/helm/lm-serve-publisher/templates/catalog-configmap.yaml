@@ -1,11 +1,20 @@
+{{- $storageBucket := required "publisher.storage.bucket is required" .Values.publisher.storage.bucket -}}
+{{- $storageEndpoint := required "publisher.storage.endpoint is required" .Values.publisher.storage.endpoint -}}
+{{- $storageRegion := required "publisher.storage.region is required" .Values.publisher.storage.region -}}
+{{- if not (regexMatch "^https?://[^[:space:]]+$" $storageEndpoint) -}}
+{{- fail (printf "publisher.storage.endpoint must be an absolute http/https URL (received: %q)" $storageEndpoint) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9-]{0,62}$" $storageRegion) -}}
+{{- fail (printf "publisher.storage.region must be 1-63 characters, alphanumeric or hyphen, starting with an alphanumeric (received: %q)" $storageRegion) -}}
+{{- end -}}
 {{- range .Values.consumer.catalogs }}
 {{- if (default true .enabled) }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .configMapName }}
-  namespace: {{ $.Values.consumer.catalogNamespace }}
+  name: {{ $.Values.publisher.catalogConfigMapPrefix }}-{{ .tenant }}
+  namespace: {{ $.Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ $.Values.publisher.name }}
     app.kubernetes.io/component: catalog
@@ -13,9 +22,9 @@ metadata:
 data:
   {{ $.Values.publisher.catalogKey }}: |
     storage:
-      bucket: {{ $.Values.publisher.storage.bucket }}
-      endpoint: {{ $.Values.publisher.storage.endpoint }}
-      region: {{ $.Values.publisher.storage.region }}
+      bucket: {{ $storageBucket }}
+      endpoint: {{ $storageEndpoint }}
+      region: {{ $storageRegion }}
 
 {{- $catalogText := $.Files.Get (printf "catalogs/%s" .file) }}
 {{- $catalogBody := regexReplaceAll "(?ms)^storage:\\n(?:[ \\t]+.*\\n?)*" $catalogText "" }}

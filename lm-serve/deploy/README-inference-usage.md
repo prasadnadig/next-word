@@ -13,7 +13,7 @@ Envoy routes each model by URL prefix:
 `<ENV_SEGMENT>` defaults to the namespace name and can be overridden with
 `routeConfig.namespaceTenantSegmentMap`.
 
-Example model names are those from `models.yaml` in the catalog ConfigMap.
+Example model names are those currently routed by the tenant route ConfigMap.
 
 ## Authentication options
 
@@ -100,13 +100,13 @@ If workload tests show measurable cache-locality gains, introduce hash-based aff
 ## Automated smoke test
 
 The deploy module includes an automated tester that discovers the edge endpoint
-and tests all enabled models from the catalog:
+and tests all routed models from the route ConfigMap:
 
 ```bash
 bash smoke_test_lm_serve_catalog.sh \
   --namespace lm-serve \
-  --catalog-configmap lm-serve-model-catalog \
-  --catalog-key models.yaml \
+  --route-configmap lm-serve-envoy-routes \
+  --route-key routes.yaml \
   --api-key "<YOUR_API_KEY>"
 ```
 

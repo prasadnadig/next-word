@@ -10,7 +10,7 @@ This guide explains how to install and operate the vLLM serving stack model reco
 - One Service per enabled model.
 - Route data that the platform chart can consume through the shared route ConfigMap contract.
 
-Because reconciliation is catalog-driven, model add/update/remove operations are done by editing one ConfigMap and rerunning the model-reconciler image Job (or enabling watch mode).
+Because reconciliation is catalog-driven, model add/update/remove operations are done by updating the published tenant catalog in object storage and rerunning the model-reconciler image Job (or enabling watch mode).
 
 ## Prerequisites
 
@@ -174,8 +174,8 @@ Use the dedicated smoke-test client script:
 ```bash
 bash smoke_test_lm_serve_catalog.sh \
   --namespace lm-serve \
-  --catalog-configmap lm-serve-model-catalog \
-  --catalog-key models.yaml \
+  --route-configmap lm-serve-envoy-routes \
+  --route-key routes.yaml \
   --api-key "<YOUR_API_KEY>" \
   --jwt-token "<YOUR_JWT>"
 ```

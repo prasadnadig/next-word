@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Reconcile model catalog ConfigMap into model runtime resources."""
+"""Reconcile object-storage catalog into model runtime resources."""
 
 # ADR: Kubernetes API access approach for model reconciliation
 #
 # Context:
-# - This component reconciles catalog-driven desired state into Kubernetes
-#   objects (ConfigMap, Service, StatefulSet) and deletes stale resources.
+# - This component reconciles object-storage catalog desired state into
+#   Kubernetes objects (ConfigMap, Service, StatefulSet) and deletes stale
+#   resources.
 # - The surrounding operational workflow in this repository is Helm + kubectl
 #   driven, and operators already reason about deployments through those tools.
 #
@@ -44,6 +45,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 import shutil
@@ -55,16 +57,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import boto3
+from botocore.exceptions import ClientError
 import yaml
 
 
 MANAGED_BY_LABEL = "vllm-catalog-deployer"
+AUTH_ERROR_CODES = {
+    "AccessDenied",
+    "AccessDeniedException",
+    "InvalidAccessKeyId",
+    "InvalidToken",
+    "SignatureDoesNotMatch",
+    "TokenRefreshRequired",
+    "UnrecognizedClientException",
+    "ExpiredToken",
+    "ExpiredTokenException",
+}
 
 
 @dataclass
 class Config:
     namespace: str
-    catalog_configmap: str
+    catalog_storage_bucket: str
+    catalog_storage_endpoint: str
+    catalog_storage_region: str
+    catalog_storage_prefix: str
+    catalog_tenant: str
     catalog_key: str
     route_configmap: str
     route_key: str
@@ -72,7 +91,10 @@ class Config:
     model_service_type: str
     vllm_image_default: str
     init_sync_image: str
-    s3_secret_name: str
+    s3_secret_name_a: str
+    s3_secret_name_b: str
+    s3_secret_placeholder_value: str
+    require_ready_s3_secret: bool
     storage_class_name: str
     watch_interval_sec: int
     dry_run: bool
@@ -98,10 +120,14 @@ def fatal(msg: str) -> None:
 
 def parse_args() -> Config:
     parser = argparse.ArgumentParser(
-        description="Reconcile vLLM model-serving resources from a catalog ConfigMap",
+        description="Reconcile vLLM model-serving resources from a tenant catalog in object storage",
     )
     parser.add_argument("-n", "--namespace", default="lm-serve")
-    parser.add_argument("--catalog-configmap", default="lm-serve-model-catalog")
+    parser.add_argument("--catalog-storage-bucket", default="")
+    parser.add_argument("--catalog-storage-endpoint", default="")
+    parser.add_argument("--catalog-storage-region", default="")
+    parser.add_argument("--catalog-storage-prefix", default="published-catalogs")
+    parser.add_argument("--catalog-tenant", default="")
     parser.add_argument("--catalog-key", default="models.yaml")
     parser.add_argument("--route-configmap", default="lm-serve-envoy-routes")
     parser.add_argument("--route-key", default="routes.yaml")
@@ -117,7 +143,19 @@ def parse_args() -> Config:
     )
     parser.add_argument("--vllm-image", default="vllm/vllm-openai:v0.8.5")
     parser.add_argument("--init-sync-image", default="amazon/aws-cli:2.22.14")
-    parser.add_argument("--s3-secret", default="lm-serve-object-storage-creds")
+    parser.add_argument("--s3-secret-a", default="lm-serve-object-storage-creds-a")
+    parser.add_argument("--s3-secret-b", default="lm-serve-object-storage-creds-b")
+    parser.add_argument(
+        "--s3-secret-placeholder-value",
+        default="REPLACE_ME_SET_REAL_CREDENTIAL",
+        help="Placeholder value used in bootstrap pull secrets; reconciliation is skipped until at least one secret is updated",
+    )
+    parser.add_argument(
+        "--require-ready-s3-secret",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require at least one configured S3 secret to have non-placeholder credentials before reconciling",
+    )
     parser.add_argument("--storage-class", default="")
     parser.add_argument("--watch-interval-sec", default="0")
     parser.add_argument("--kubeconfig", default="")
@@ -127,10 +165,22 @@ def parse_args() -> Config:
 
     if not str(args.watch_interval_sec).isdigit():
         fatal("--watch-interval-sec must be a non-negative integer")
+    if not args.catalog_storage_bucket.strip():
+        fatal("--catalog-storage-bucket is required")
+    if not args.catalog_storage_endpoint.strip():
+        fatal("--catalog-storage-endpoint is required")
+    if not args.catalog_storage_region.strip():
+        fatal("--catalog-storage-region is required")
+    if not args.catalog_tenant.strip():
+        fatal("--catalog-tenant is required")
 
     return Config(
         namespace=args.namespace,
-        catalog_configmap=args.catalog_configmap,
+        catalog_storage_bucket=args.catalog_storage_bucket,
+        catalog_storage_endpoint=args.catalog_storage_endpoint,
+        catalog_storage_region=args.catalog_storage_region,
+        catalog_storage_prefix=args.catalog_storage_prefix,
+        catalog_tenant=args.catalog_tenant,
         catalog_key=args.catalog_key,
         route_configmap=args.route_configmap,
         route_key=args.route_key,
@@ -138,7 +188,10 @@ def parse_args() -> Config:
         model_service_type=args.model_service_type,
         vllm_image_default=args.vllm_image,
         init_sync_image=args.init_sync_image,
-        s3_secret_name=args.s3_secret,
+        s3_secret_name_a=args.s3_secret_a,
+        s3_secret_name_b=args.s3_secret_b,
+        s3_secret_placeholder_value=args.s3_secret_placeholder_value,
+        require_ready_s3_secret=args.require_ready_s3_secret,
         storage_class_name=args.storage_class,
         watch_interval_sec=int(args.watch_interval_sec),
         dry_run=args.dry_run,
@@ -209,24 +262,10 @@ def ensure_namespace(config: Config) -> None:
         run_cmd(config, create_ns, capture=False)
 
 
-def fetch_catalog(config: Config) -> dict[str, Any]:
-    escaped_key = config.catalog_key.replace(".", "\\.")
-    cmd = kubectl_cmd(
-        config,
-        "-n",
-        config.namespace,
-        "get",
-        "configmap",
-        config.catalog_configmap,
-        "-o",
-        f"jsonpath={{.data.{escaped_key}}}",
-    )
-    payload = run_cmd(config, cmd, capture=True).strip()
+def load_catalog_payload(payload: str) -> dict[str, Any]:
     if not payload:
-        fatal(
-            f"Catalog ConfigMap {config.catalog_configmap} missing key {config.catalog_key} "
-            f"in namespace {config.namespace}"
-        )
+        fatal("Catalog payload is empty")
+
     try:
         catalog = yaml.safe_load(payload)
     except yaml.YAMLError as exc:
@@ -237,6 +276,125 @@ def fetch_catalog(config: Config) -> dict[str, Any]:
     if not isinstance(models, list):
         fatal("Catalog is invalid: models must be a list")
     return catalog
+
+
+def is_auth_error(exc: Exception) -> bool:
+    if not isinstance(exc, ClientError):
+        return False
+    code = str(exc.response.get("Error", {}).get("Code", ""))
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in AUTH_ERROR_CODES or status == 401 or status == 403
+
+
+def fetch_catalog_from_object_storage(config: Config, s3_secret_names: list[str]) -> tuple[dict[str, Any], str]:
+    key = f"{config.catalog_storage_prefix.strip('/')}/{config.catalog_tenant.strip()}/{config.catalog_key.strip('/')}"
+    auth_failures = 0
+
+    for s3_secret_name in s3_secret_names:
+        try:
+            secret_data = fetch_secret_data(config, s3_secret_name)
+        except SystemExit:
+            warn(f"S3 pull secret {config.namespace}/{s3_secret_name} not found; trying next")
+            continue
+        access_key_id = secret_data.get("access_key_id", "").strip()
+        secret_access_key = secret_data.get("secret_access_key", "").strip()
+        if not access_key_id or not secret_access_key:
+            warn(f"Secret {config.namespace}/{s3_secret_name} missing credentials; trying next")
+            continue
+
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=config.catalog_storage_endpoint,
+            region_name=config.catalog_storage_region,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+        )
+
+        try:
+            response = s3.get_object(Bucket=config.catalog_storage_bucket, Key=key)
+            body = response["Body"].read().decode("utf-8")
+            return load_catalog_payload(body), s3_secret_name
+        except Exception as exc:  # noqa: BLE001
+            if is_auth_error(exc):
+                auth_failures += 1
+                warn(f"Catalog pull auth failed with secret {config.namespace}/{s3_secret_name}; trying next")
+                continue
+            fatal(
+                "Failed to read published catalog from object storage: "
+                f"s3://{config.catalog_storage_bucket}/{key} ({exc})"
+            )
+
+    if auth_failures > 0:
+        fatal(f"All configured S3 secrets failed authentication while reading s3://{config.catalog_storage_bucket}/{key}")
+    fatal(f"No usable S3 secret found for catalog pull in namespace {config.namespace}")
+
+
+def fetch_secret_data(config: Config, secret_name: str) -> dict[str, str]:
+    cmd = kubectl_cmd(
+        config,
+        "-n",
+        config.namespace,
+        "get",
+        "secret",
+        secret_name,
+        "-o",
+        "json",
+    )
+    output = run_cmd(config, cmd, capture=True)
+    secret_doc = json.loads(output)
+    raw_data = secret_doc.get("data", {})
+    if not isinstance(raw_data, dict):
+        return {}
+
+    decoded: dict[str, str] = {}
+    for key, encoded in raw_data.items():
+        if not isinstance(encoded, str):
+            continue
+        try:
+            decoded[key] = base64.b64decode(encoded).decode("utf-8")
+        except Exception:  # noqa: BLE001
+            decoded[key] = ""
+    return decoded
+
+
+def secret_is_ready(secret_data: dict[str, str], placeholder: str) -> bool:
+    access_key_id = secret_data.get("access_key_id", "").strip()
+    secret_access_key = secret_data.get("secret_access_key", "").strip()
+    if not access_key_id or not secret_access_key:
+        return False
+    if access_key_id == placeholder or secret_access_key == placeholder:
+        return False
+    return True
+
+
+def resolve_s3_secret_candidates(config: Config) -> list[str]:
+    names = [config.s3_secret_name_a.strip(), config.s3_secret_name_b.strip()]
+    candidates: list[str] = []
+    for name in names:
+        if name and name not in candidates:
+            candidates.append(name)
+
+    if not candidates:
+        fatal("At least one of --s3-secret-a or --s3-secret-b must be non-empty")
+
+    info(f"S3 pull secret candidates: {', '.join(candidates)}")
+
+    if not config.require_ready_s3_secret:
+        return candidates
+
+    ready: list[str] = []
+    for secret_name in candidates:
+        try:
+            secret_data = fetch_secret_data(config, secret_name)
+        except SystemExit:
+            warn(f"S3 pull secret {config.namespace}/{secret_name} not found; trying next")
+            continue
+        if secret_is_ready(secret_data, config.s3_secret_placeholder_value):
+            ready.append(secret_name)
+        else:
+            warn(f"S3 pull secret {config.namespace}/{secret_name} still has placeholder or empty credentials; trying next")
+
+    return ready
 
 
 def enabled_models(catalog: dict[str, Any]) -> list[dict[str, Any]]:
@@ -298,7 +456,7 @@ def render_route_configmap(config: Config, catalog: dict[str, Any], route_tenant
     }
 
 
-def model_docs(config: Config, catalog: dict[str, Any], model: dict[str, Any]) -> list[dict[str, Any]]:
+def model_docs(config: Config, catalog: dict[str, Any], model: dict[str, Any], s3_secret_name: str) -> list[dict[str, Any]]:
     model_name = str(model["name"])
     model_k8s = sanitize_name(model_name)
 
@@ -363,7 +521,7 @@ def model_docs(config: Config, catalog: dict[str, Any], model: dict[str, Any]) -
                         "name": "AWS_ACCESS_KEY_ID",
                         "valueFrom": {
                             "secretKeyRef": {
-                                "name": config.s3_secret_name,
+                                "name": s3_secret_name,
                                 "key": "access_key_id",
                             }
                         },
@@ -372,7 +530,7 @@ def model_docs(config: Config, catalog: dict[str, Any], model: dict[str, Any]) -
                         "name": "AWS_SECRET_ACCESS_KEY",
                         "valueFrom": {
                             "secretKeyRef": {
-                                "name": config.s3_secret_name,
+                                "name": s3_secret_name,
                                 "key": "secret_access_key",
                             }
                         },
@@ -566,7 +724,12 @@ def cleanup_removed_models(config: Config, desired_names: set[str]) -> None:
 def reconcile_once(config: Config) -> None:
     with tempfile.TemporaryDirectory() as td:
         tmpdir = Path(td)
-        catalog = fetch_catalog(config)
+        s3_secret_candidates = resolve_s3_secret_candidates(config)
+        if not s3_secret_candidates:
+            ok(f"Reconciliation skipped for namespace {config.namespace} until at least one pull secret is ready")
+            return
+
+        catalog, s3_secret_name = fetch_catalog_from_object_storage(config, s3_secret_candidates)
 
         route_tenant_segment = sanitize_name(config.route_tenant_segment or config.namespace)
         if not route_tenant_segment:
@@ -580,7 +743,7 @@ def reconcile_once(config: Config) -> None:
             model_k8s = sanitize_name(model_name)
             if not model_k8s:
                 fatal(f"Model name produces empty kubernetes suffix: {model_name}")
-            docs = model_docs(config, catalog, model)
+            docs = model_docs(config, catalog, model, s3_secret_name)
             model_manifest = write_manifest(tmpdir, f"model-{model_k8s}.yaml", docs)
             run_apply(config, model_manifest)
             desired_names.add(f"vllm-{model_k8s}")
@@ -603,8 +766,9 @@ def main() -> int:
     ensure_namespace(config)
 
     info(
-        "Reconciling vLLM catalog from ConfigMap "
-        f"{config.catalog_configmap}/{config.catalog_key} in namespace {config.namespace}"
+        "Reconciling vLLM catalog from object storage "
+        f"s3://{config.catalog_storage_bucket}/{config.catalog_storage_prefix.strip('/')}/{config.catalog_tenant}/{config.catalog_key} "
+        f"for namespace {config.namespace}"
     )
 
     if config.watch_interval_sec == 0:

@@ -19,7 +19,7 @@ ARG KUBECTL_VERSION=v1.32.3
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/* \
-  && pip install --no-cache-dir pyyaml \
+  && pip install --no-cache-dir pyyaml boto3 \
   && curl -fsSL -o /usr/local/bin/kubectl \
      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
   && chmod +x /usr/local/bin/kubectl \

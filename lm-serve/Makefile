@@ -2,8 +2,9 @@ SHELL := /bin/bash
 
 # Configure core deployment defaults.
 NAMESPACE ?= lm-serve
-CATALOG_CONFIGMAP ?= lm-serve-model-catalog
 CATALOG_KEY ?= models.yaml
+ROUTE_CONFIGMAP ?= lm-serve-envoy-routes
+ROUTE_KEY ?= routes.yaml
 MODEL_SERVICE_TYPE ?= LoadBalancer
 AUTH_NAMESPACE ?= $(if $(TENANT),$(TENANT),$(NAMESPACE))
 
@@ -117,7 +118,7 @@ help:
 	@echo "    done: verify models tenant overlay exists"
 	@echo ""
 	@echo "Override variables (set as make VAR=value):"
-	@echo "  NAMESPACE=$(NAMESPACE) CATALOG_CONFIGMAP=$(CATALOG_CONFIGMAP) CATALOG_KEY=$(CATALOG_KEY)"
+	@echo "  NAMESPACE=$(NAMESPACE) CATALOG_KEY=$(CATALOG_KEY) ROUTE_CONFIGMAP=$(ROUTE_CONFIGMAP) ROUTE_KEY=$(ROUTE_KEY)"
 	@echo "    done: select Kubernetes namespace and model catalog location"
 	@echo "  AUTH_NAMESPACE=$(AUTH_NAMESPACE)"
 	@echo "    done: select where auth chart is deployed; default follows TENANT when set, otherwise NAMESPACE"
@@ -246,7 +247,6 @@ apply-serve-model: check-kubectl check-helm require-tenant-models
 	  FORCE="$(FORCE)" \
 	  TENANT="$(TENANT)" \
 	  NAMESPACE="$(NAMESPACE)" \
-	  CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" \
 	  CATALOG_KEY="$(CATALOG_KEY)" \
 	  MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" \
 	  MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" \
@@ -261,7 +261,6 @@ deploy-watch-local: check-kubectl check-helm require-tenant-models
 	  FORCE="$(FORCE)" \
 	  TENANT="$(TENANT)" \
 	  NAMESPACE="$(NAMESPACE)" \
-	  CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" \
 	  CATALOG_KEY="$(CATALOG_KEY)" \
 	  MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" \
 	  MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" \
@@ -279,8 +278,8 @@ smoke-test-api-key: check-kubectl check-yq
 	@if [[ -z "$(API_KEY)" ]]; then echo "Set API_KEY variable"; exit 1; fi
 	bash deploy/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
-	  --catalog-configmap $(CATALOG_CONFIGMAP) \
-	  --catalog-key $(CATALOG_KEY) \
+	  --route-configmap $(ROUTE_CONFIGMAP) \
+	  --route-key $(ROUTE_KEY) \
 	  --api-key "$(API_KEY)" \
 	  --prompt "$(PROMPT)"
 
@@ -289,8 +288,8 @@ smoke-test-jwt: check-kubectl check-yq
 	@if [[ -z "$(JWT_TOKEN)" ]]; then echo "Set JWT_TOKEN variable"; exit 1; fi
 	bash deploy/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
-	  --catalog-configmap $(CATALOG_CONFIGMAP) \
-	  --catalog-key $(CATALOG_KEY) \
+	  --route-configmap $(ROUTE_CONFIGMAP) \
+	  --route-key $(ROUTE_KEY) \
 	  --jwt-token "$(JWT_TOKEN)" \
 	  --prompt "$(PROMPT)"
 
@@ -301,8 +300,8 @@ smoke-test-all: check-kubectl check-yq
 	@if [[ -z "$(JWT_TOKEN)" ]]; then echo "Set JWT_TOKEN variable"; exit 1; fi
 	bash deploy/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
-	  --catalog-configmap $(CATALOG_CONFIGMAP) \
-	  --catalog-key $(CATALOG_KEY) \
+	  --route-configmap $(ROUTE_CONFIGMAP) \
+	  --route-key $(ROUTE_KEY) \
 	  --api-key "$(API_KEY)" \
 	  --jwt-token "$(JWT_TOKEN)" \
 	  --prompt "$(PROMPT)"
@@ -353,7 +352,7 @@ apply-model-reconciler: confirm-target-cluster check-helm check-kubectl require-
 	  --set modelReconciler.enabled=true \
 	  --set-string modelReconciler.name=$(MODEL_RECONCILER_JOB_NAME) \
 	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE) \
-	  --set-string modelReconciler.args.catalogConfigMapName=$(CATALOG_CONFIGMAP) \
+	  --set-string catalog.tenant=$(TENANT) \
 	  --set-string modelReconciler.args.catalogKey=$(CATALOG_KEY) \
 	  --set-string modelReconciler.args.modelServiceType=$(MODEL_SERVICE_TYPE) \
 	  --set-string modelReconciler.args.watchIntervalSec=$(MODEL_RECONCILER_WATCH_INTERVAL_SEC) $(HELM_EXTRA_ARGS)
@@ -415,7 +414,7 @@ happy-apply: confirm-target-cluster
 	@$(MAKE) apply-model-reconciler FORCE=true TENANT="$(TENANT)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[4/5] Running one immediate reconciliation pass from local workstation."
 	@echo "      Why: bootstraps model workloads immediately by running the in-cluster reconciler image in one-shot mode."
-	@$(MAKE) apply-serve-model FORCE=true TENANT="$(TENANT)" NAMESPACE="$(NAMESPACE)" CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" MODEL_RECONCILER_JOB_NAME="$(MODEL_RECONCILER_JOB_NAME)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) apply-serve-model FORCE=true TENANT="$(TENANT)" NAMESPACE="$(NAMESPACE)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" MODEL_RECONCILER_JOB_NAME="$(MODEL_RECONCILER_JOB_NAME)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[5/5] Running smoke test against enabled models through the edge endpoint."
 	@echo "      Why: validates auth path plus basic inference availability after deployment."
 	@if [[ -n "$(API_KEY)" && -n "$(JWT_TOKEN)" ]]; then \
@@ -435,5 +434,5 @@ happy-release: confirm-target-cluster
 	@echo "[2/3] Publishing container images."
 	@$(MAKE) happy-publish AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE="$(ROUTE_AGGREGATOR_IMAGE)" PUBLISHER_IMAGE="$(PUBLISHER_IMAGE)" PUBLISH_IF_MISSING="$(PUBLISH_IF_MISSING)"
 	@echo "[3/3] Applying release to target cluster."
-	@$(MAKE) happy-apply FORCE=true TENANT="$(TENANT)" API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" CATALOG_CONFIGMAP="$(CATALOG_CONFIGMAP)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) happy-apply FORCE=true TENANT="$(TENANT)" API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "Happy release complete."

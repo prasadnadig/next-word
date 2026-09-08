@@ -35,7 +35,8 @@ A tenant is a deployment lane with independent:
 - Keep one source catalog file per tenant.
 
 4. Secret isolation
-- Separate object storage and auth secrets by namespace/tenant strategy.
+- Keep object storage pull secrets owned by each tenant models/reconciler release.
+- Keep auth secrets separated by your tenant or shared-auth strategy.
 
 5. Resource governance
 - Use quotas/limits to prevent one tenant from starving others.
@@ -49,22 +50,21 @@ flowchart TB
     REG[consumer.catalogs registry\nvalues.yaml]
   end
 
+  OBJ[(S3-Compatible Object Storage\npublished-catalogs/<tenant>/models.yaml)]
+
   subgraph T1[Tenant dev-west Namespace]
-    C1[Catalog ConfigMap]
     R1[Model Reconciler]
     M1[Model StatefulSets/Services]
   end
 
   subgraph T2[Tenant staging Namespace]
-    C2[Catalog ConfigMap]
     R2[Model Reconciler]
     M2[Model StatefulSets/Services]
   end
 
-  PV --> C1
-  PV --> C2
-  C1 --> R1 --> M1
-  C2 --> R2 --> M2
+  PV --> OBJ
+  OBJ --> R1 --> M1
+  OBJ --> R2 --> M2
 ```
 
 ## Tenant Creation Workflow
@@ -109,10 +109,6 @@ consumer:
     - tenant: dev-west
       enabled: true
       file: dev-west.yaml
-      configMapName: lm-serve-model-catalog-dev-west
-      namespace: lm-serve-dev-west
-      serviceAccountName: vllm-catalog-model-reconciler
-      secretName: lm-serve-dev-west-catalog-credentials
 ```
 
 3. Render and validate.
@@ -133,6 +129,12 @@ make apply-base TENANT=dev-west NAMESPACE=lm-serve-dev-west
 make apply-model-reconciler TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 make apply-serve-model TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
 ```
+
+6. Populate object-storage pull secret credentials for that tenant models release.
+
+- Models chart creates two placeholder pull secrets (key A + key B).
+- Reconciler does not apply workloads until at least one pull secret has non-placeholder credentials.
+- Reconciler tries one key and automatically falls back to the other on auth errors.
 
 ## Auth Strategy Across Tenants
 
