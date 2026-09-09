@@ -14,6 +14,8 @@ Use it to link focused instruction documents by topic so this file can expand ov
   - [AGENTS-SCRIPT-STYLE.md](AGENTS-SCRIPT-STYLE.md)
 - Makefile workflow standards:
   - [AGENTS-MAKEFILE-STYLE.md](AGENTS-MAKEFILE-STYLE.md)
+- README authoring standards:
+  - [AGENTS-README-STYLE.md](AGENTS-README-STYLE.md)
 
 ## Scope
 

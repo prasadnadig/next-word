@@ -5,8 +5,8 @@ This guide focuses on how to run multiple lm-serve tenants safely on a single Ku
 ## What "multiple tenants" means here
 
 A tenant is a deployment lane with independent:
-- model runtime overrides (`helm/lm-serve-models/values.<tenant>.yaml`)
-- source catalog (`helm/lm-serve-publisher/catalogs/<tenant>.yaml`)
+- model runtime overrides (`models/helm/values.<tenant>.yaml`)
+- source catalog (`publisher/helm/catalogs/<tenant>.yaml`)
 - rollout cadence (apply/reconcile schedule)
 - optional namespace and auth boundary
 
@@ -45,7 +45,7 @@ A tenant is a deployment lane with independent:
 
 ```mermaid
 flowchart TB
-  subgraph Publisher[lm-publisher Namespace]
+  subgraph Publisher[lm-serve-publisher Namespace]
     PV[Publisher CronJob]
     REG[consumer.catalogs registry\nvalues.yaml]
   end
@@ -95,11 +95,11 @@ sequenceDiagram
 1. Create tenant files.
 
 ```bash
-cp helm/lm-serve-models/values.sample-env.yaml helm/lm-serve-models/values.dev-west.yaml
-cp helm/lm-serve-publisher/catalogs/sample-env.yaml helm/lm-serve-publisher/catalogs/dev-west.yaml
+cp models/helm/values.sample-env.yaml models/helm/values.dev-west.yaml
+cp publisher/helm/catalogs/sample-env.yaml publisher/helm/catalogs/dev-west.yaml
 ```
 
-2. Register the tenant in `helm/lm-serve-publisher/values.yaml` under `consumer.catalogs`.
+2. Register the tenant in `publisher/helm/values.yaml` under `consumer.catalogs`.
 
 Example shape:
 
@@ -126,8 +126,8 @@ make apply-base TENANT=dev-west NAMESPACE=lm-serve-dev-west
 5. Reconcile model runtime.
 
 ```bash
-make apply-model-reconciler TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
-make apply-serve-model TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-model-reconciler TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE_REGISTRY=<registry> MODEL_RECONCILER_IMAGE_REPOSITORY=vllm-catalog-deployer MODEL_RECONCILER_IMAGE_TAG=0.1.0
+make apply-serve-model TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE_REGISTRY=<registry> MODEL_RECONCILER_IMAGE_REPOSITORY=vllm-catalog-deployer MODEL_RECONCILER_IMAGE_TAG=0.1.0
 ```
 
 6. Populate object-storage pull secret credentials for that tenant models release.

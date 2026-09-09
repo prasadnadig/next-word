@@ -1,0 +1,23 @@
+# EXAMPLE ONLY — showcases per-tenant servingOverrides; not wired into values.yaml's consumer.catalogs.
+#
+# Same model selection as tiny-smoke.yaml, but demonstrates overriding fields
+# from the global catalog's (models.yaml) `serving` block for this tenant only.
+# servingOverrides is deep-merged onto the global serving block: keys you set
+# here win, nested maps (e.g. nodeSelector) merge key-by-key, and anything you
+# don't set here is inherited unchanged from the global catalog.
+
+# models:
+#   - name: tiny-gpt2-pretrained
+#     enabled: true
+#     servingOverrides:
+#       replicas: 2
+#       pvcSize: 8Gi
+#       nodeSelector:
+#         topology.kubernetes.io/zone: us-east-1a
+#       extraArgs:
+#         - --gpu-memory-utilization
+#         - "0.8"
+#   - name: tiny-random-gpt2
+#     enabled: true
+#     servingOverrides:
+#       replicas: 1

@@ -1,0 +1,31 @@
+# tiny-smoke tenant catalog selection
+#
+# Purpose:
+# - Enable two ultra-small Hugging Face text-generation fixtures for validating
+#   a new inference service implementation with minimal artifact size.
+#
+# Model selection rationale:
+# - tiny-gpt2-pretrained (sshleifer/tiny-gpt2):
+#   - Tiny pretrained checkpoint (~2.5 MB), useful for realistic smoke checks:
+#     tokenizer path, deterministic generation, request/response formatting.
+# - tiny-random-gpt2 (akreal/tiny-random-gpt2):
+#   - Extremely small random-weight GPT-2 variant, useful for architecture and
+#     loader/integration checks where semantic quality is irrelevant.
+#
+# Caveats:
+# - random-weight outputs are expected to be low quality or repetitive.
+# - Passing tests with these models does not imply production-grade behavior
+#   for larger models; add a medium model for follow-up validation.
+#
+# This file only selects models by `name` from the global catalog
+# (models.yaml); source/storage/serving config lives there. `enabled` here is
+# this tenant's local on/off switch; the model must also be enabled in the
+# global catalog to actually publish. Use `servingOverrides` to deep-merge
+# tenant-specific serving fields on top of the global `serving` block (e.g. a
+# different `replicas` or `pvcSize` for this tenant only).
+
+models:
+  - name: tiny-gpt2-pretrained
+    enabled: true
+  - name: tiny-random-gpt2
+    enabled: true

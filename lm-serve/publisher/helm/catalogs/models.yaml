@@ -1,0 +1,256 @@
+# Global model catalog: single source of truth for every model this publisher
+# knows how to publish. Tenant catalog files (sample-env.yaml,
+# small-representative.yaml, tiny-smoke.yaml) only select which of these
+# models (by `name`) are enabled for that tenant; they do not redefine
+# source/storage/serving here.
+#
+# `enabled` below is the global on/off switch: false means the model is
+# retired/blocked for every tenant regardless of tenant-level selection. A
+# model must be enabled here AND enabled in a tenant's selection to publish.
+#
+# source.revision is expected to be an immutable pinned tag or commit SHA, not
+# a moving branch like "main". The publisher's redownload skip check compares
+# source.repo/revision against the last published manifest pointer; a moving
+# branch would never be redetected as changed. The "main" values below are
+# placeholders and should be pinned to a specific commit before relying on
+# skip behavior in production.
+#
+# Disk-space sizing note for the publisher pipeline:
+# - serving.pvcSize is treated as the rough on-disk footprint of the Hugging Face
+#   model payload downloaded during publication.
+# - Before download starts, the publisher checks free temp-disk space using:
+#     required_local_bytes = ceil(serving.pvcSize * 1.2)
+# - The extra 20% headroom covers staging, extraction, and filesystem overhead.
+# - If the temp volume is too small, the publisher exits before download begins
+#   and tells the operator to free space, point TMPDIR to a larger mount, or
+#   reduce scope with --model / --max-models.
+# - Helm does not validate this temp-disk requirement; it only requests a PVC of
+#   the configured pvcSize for the model cache in the runtime StatefulSet.
+
+models:
+  - name: tiny-gpt2-pretrained
+    enabled: true
+    source:
+      type: huggingface
+      repo: sshleifer/tiny-gpt2
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/tiny-gpt2-pretrained
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 5Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 256
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      runtimeClassName: ""
+      priorityClassName: ""
+      serviceAccountName: ""
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: lm-serve/model-name
+                      operator: In
+                      values:
+                        - tiny-gpt2-pretrained
+      extraArgs: []
+
+  - name: tiny-random-gpt2
+    enabled: true
+    source:
+      type: huggingface
+      repo: akreal/tiny-random-gpt2
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/tiny-random-gpt2
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 5Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 256
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      runtimeClassName: ""
+      priorityClassName: ""
+      serviceAccountName: ""
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: lm-serve/model-name
+                      operator: In
+                      values:
+                        - tiny-random-gpt2
+      extraArgs: []
+
+  - name: mistral-7b-instruct
+    enabled: true
+    source:
+      type: huggingface
+      repo: mistralai/Mistral-7B-Instruct-v0.3
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/mistral-7b-instruct
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 120Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 8192
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      runtimeClassName: ""
+      priorityClassName: ""
+      serviceAccountName: ""
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: lm-serve/model-name
+                      operator: In
+                      values:
+                        - mistral-7b-instruct
+      extraArgs:
+        - --gpu-memory-utilization
+        - "0.9"
+
+  - name: llama-3-1-8b-instruct
+    enabled: true
+    source:
+      type: huggingface
+      repo: meta-llama/Llama-3.1-8B-Instruct
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/llama-3-1-8b-instruct
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 150Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 8192
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      extraArgs: []
+
+  - name: smollm2-135m-instruct
+    enabled: true
+    source:
+      type: huggingface
+      repo: HuggingFaceTB/SmolLM2-135M-Instruct
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/smollm2-135m-instruct
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 12Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 2048
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      runtimeClassName: ""
+      priorityClassName: ""
+      serviceAccountName: ""
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: lm-serve/model-name
+                      operator: In
+                      values:
+                        - smollm2-135m-instruct
+      extraArgs: []
+
+  - name: gemma-3-270m-it
+    enabled: true
+    source:
+      type: huggingface
+      repo: google/gemma-3-270m-it
+      revision: main
+      authEnv: HF_TOKEN
+    storage:
+      prefix: models/gemma-3-270m-it
+    serving:
+      replicas: 1
+      gpuCount: 1
+      pvcSize: 16Gi
+      port: 8000
+      tensorParallelSize: 1
+      maxModelLen: 2048
+      dtype: float16
+      image: vllm/vllm-openai:v0.8.5
+      runtimeClassName: ""
+      priorityClassName: ""
+      serviceAccountName: ""
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: lm-serve/model-name
+                      operator: In
+                      values:
+                        - gemma-3-270m-it
+      extraArgs: []

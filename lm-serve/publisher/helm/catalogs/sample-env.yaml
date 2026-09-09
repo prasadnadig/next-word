@@ -1,0 +1,33 @@
+# Sample-env tenant catalog selection
+#
+# Purpose:
+# - Default/reference selection for a broadly representative LLM tenant.
+# - Keep one strong general-purpose model enabled while leaving a second larger
+#   candidate disabled until capacity and licensing requirements are confirmed.
+#
+# Why this fits:
+# - mistral-7b-instruct is a strong, widely used instruction-tuned model that
+#   exercises standard chat/inference workflows and typical serving
+#   configurations without requiring a very large deployment footprint.
+# - llama-3-1-8b-instruct is retained as a follow-up option, but kept disabled
+#   for this tenant because it is larger and may need additional validation
+#   around licensing and resource sizing.
+#
+# Caveats:
+# - Large models like Mistral-7B and Llama-3.1-8B are not small smoke fixtures;
+#   they need adequate GPU memory and capacity planning.
+# - Keep this profile for representative validation, not for tiny smoke tests.
+#
+# This file only selects models by `name` from the global catalog
+# (models.yaml); source/storage/serving config lives there. `enabled` here is
+# this tenant's local on/off switch; the model must also be enabled in the
+# global catalog to actually publish. Use `servingOverrides` to deep-merge
+# tenant-specific serving fields on top of the global `serving` block (e.g. a
+# different `replicas` or `pvcSize` for this tenant only).
+
+models:
+  - name: mistral-7b-instruct
+    enabled: true
+  - name: llama-3-1-8b-instruct
+    enabled: false
+

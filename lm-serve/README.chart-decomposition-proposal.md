@@ -202,7 +202,10 @@ catalog:
 
 modelReconciler:
   enabled: true
-  image: REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
+  image:
+    registry: localhost
+    repository: vllm-catalog-deployer
+    tag: "0.1.0"
   args:
     catalogKey: models.yaml
     routeConfigMapName: lm-serve-envoy-routes
@@ -211,7 +214,10 @@ modelReconciler:
 
 modelPublisher:
   enabled: false
-  image: REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
+  image:
+    registry: localhost
+    repository: lm-serve-model-publisher
+    tag: "0.1.0"
 
 routeConfig:
   configMapName: lm-serve-envoy-routes
@@ -222,16 +228,18 @@ routeConfig:
 ```yaml
 publisher:
   enabled: true
-  image: REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
+  image:
+    registry: localhost
+    repository: lm-serve-model-publisher
+    tag: "0.1.0"
   imagePullPolicy: IfNotPresent
   schedule: "0 */6 * * *"
   serviceAccountName: lm-serve-model-publisher
-  pruneStaging: true
 
 rbac:
   enabled: true
-  s3SecretName: lm-publisher-object-storage-creds
-  hfSecretName: lm-publisher-hf-credentials
+  s3SecretName: lm-serve-publisher-object-storage-creds
+  hfSecretName: lm-serve-publisher-hf-credentials
 ```
 ```
 

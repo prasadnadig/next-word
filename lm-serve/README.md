@@ -11,47 +11,47 @@ The design goal is simple:
 ## Summary
 
 - Use `TENANT=<tenant-name>` for tenant-scoped model workflows.
-- Keep publisher installed in its own namespace (commonly `lm-publisher`).
-- Keep one model values overlay per tenant: `helm/lm-serve-models/values.<tenant>.yaml`.
-- Keep one source catalog per tenant: `helm/lm-serve-publisher/catalogs/<tenant>.yaml`.
+- Keep publisher installed in its own namespace (commonly `lm-serve-publisher`).
+- Keep one model values overlay per tenant: `models/helm/values.<tenant>.yaml`.
+- Keep one source catalog per tenant: `publisher/helm/catalogs/<tenant>.yaml`.
 
 ## Components
 
 - `Makefile`
   - Primary operator entrypoint for render/apply/reconcile/smoke flows.
-- `helm/lm-serve-auth/`
+- `auth/helm/`
   - Auth service runtime and auth secret wiring.
-- `auth-service/`
+- `auth/image/`
   - Python auth service source + image build context.
-- `helm/lm-serve-platform/`
+- `platform/helm/`
   - Envoy edge and route-aggregation integration.
-- `route-aggregator/`
+- `platform/image/`
   - Route aggregation runtime for multi-namespace route updates.
-- `helm/lm-serve-models/`
+- `models/helm/`
   - Model runtime consumer chart + reconciler job.
-- `deploy/`
-  - Reconciler and smoke helpers used by Make workflows.
-- `helm/lm-serve-publisher/`
+- `models/image/`
+  - Model reconciler runtime image source + Docker build context.
+- `publisher/helm/`
   - Source catalogs, publisher CronJob, RBAC, and tenant catalog publication.
-- `publisher/`
+- `publisher/image/`
   - Model artifact publisher source + image build context.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  A[Catalog Source Files\nhelm/lm-serve-publisher/catalogs/*.yaml] --> B[Publisher CronJob\nhelm/lm-serve-publisher]
+  A[Catalog Source Files\npublisher/helm/catalogs/*.yaml] --> B[Publisher CronJob\npublisher/helm]
   B --> C[(S3-Compatible Object Storage)]
   C --> D[Published Tenant Catalog Files\nper tenant]
 
-  D --> E[Model Reconciler Job\nhelm/lm-serve-models]
+  D --> E[Model Reconciler Job\nmodels/helm]
   E --> F[Model StatefulSets + Services]
   E --> G[Route ConfigMap\nroutes.yaml + routes.json]
 
-  G --> H[Route Aggregator\nroute-aggregator]
-  H --> I[Envoy Edge\nhelm/lm-serve-platform]
+  G --> H[Route Aggregator\nplatform/image]
+  H --> I[Envoy Edge\nplatform/helm]
 
-  J[Auth Service\nhelm/lm-serve-auth] --> I
+  J[Auth Service\nauth/helm] --> I
   K[Client\nAPI key or JWT] --> I
   I --> F
 ```
@@ -139,35 +139,34 @@ make happy-apply TENANT=sample-env API_KEY=<api-key>
 
 ```bash
 make apply-base TENANT=dev-west NAMESPACE=lm-serve-dev-west
-make apply-model-reconciler TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make apply-model-reconciler TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE_REGISTRY=<registry> MODEL_RECONCILER_IMAGE_REPOSITORY=vllm-catalog-deployer MODEL_RECONCILER_IMAGE_TAG=0.1.0
 ```
 
 - Keep continuous reconciliation on:
 
 ```bash
-make deploy-watch-local TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE=<registry>/vllm-catalog-deployer:0.1.0
+make deploy-watch-local TENANT=dev-west NAMESPACE=lm-serve-dev-west MODEL_RECONCILER_IMAGE_REGISTRY=<registry> MODEL_RECONCILER_IMAGE_REPOSITORY=vllm-catalog-deployer MODEL_RECONCILER_IMAGE_TAG=0.1.0
 ```
 
 - Publish artifact catalogs independently:
 
 ```bash
-make apply-model-publisher PUBLISHER_IMAGE=<registry>/lm-serve-model-publisher:0.1.0
+make apply-model-publisher PUBLISHER_IMAGE_REGISTRY=<registry> PUBLISHER_IMAGE_REPOSITORY=lm-serve-model-publisher PUBLISHER_IMAGE_TAG=0.1.0
 ```
 
 ## Customization Controls
 
 Core controls:
-- `TENANT`: selects `helm/lm-serve-models/values.<tenant>.yaml`.
+- `TENANT`: selects `models/helm/values.<tenant>.yaml`.
 - `NAMESPACE`: target runtime namespace.
 - `AUTH_NAMESPACE`: auth deployment namespace.
 - `HELM_EXTRA_ARGS`: additional Helm flags (`-f`, `--set`, etc).
 
 Image controls:
-- `AUTH_IMAGE`
-- `MODEL_RECONCILER_IMAGE`
-- `ROUTE_AGGREGATOR_IMAGE_REPOSITORY`
-- `ROUTE_AGGREGATOR_IMAGE_TAG`
-- `PUBLISHER_IMAGE`
+- `{AUTH,MODEL_RECONCILER,PUBLISHER,ROUTE_AGGREGATOR}_IMAGE_REGISTRY` (each defaults to `localhost`, meaning the local node's image cache)
+- `{AUTH,MODEL_RECONCILER,PUBLISHER,ROUTE_AGGREGATOR}_IMAGE_REPOSITORY`
+- `{AUTH,MODEL_RECONCILER,PUBLISHER,ROUTE_AGGREGATOR}_IMAGE_TAG`
+- `AUTH_IMAGE`, `MODEL_RECONCILER_IMAGE`, `PUBLISHER_IMAGE`, `ROUTE_AGGREGATOR_IMAGE` (composed `<registry>/<repository>:<tag>`; set directly to override the parts above)
 
 Reconciler controls:
 - `MODEL_RECONCILER_JOB_NAME`
@@ -183,16 +182,16 @@ Release controls:
 ## Tenant Artifacts: Source vs Consumer
 
 - Source-of-truth catalogs:
-  - `helm/lm-serve-publisher/catalogs/<tenant>.yaml`
+  - `publisher/helm/catalogs/<tenant>.yaml`
 - Consumer runtime overlays:
-  - `helm/lm-serve-models/values.<tenant>.yaml`
+  - `models/helm/values.<tenant>.yaml`
 
 This separation keeps model intent and runtime policy independently evolvable.
 
 ## Publisher Notes
 
 - Publisher chart install does not require `TENANT`.
-- Tenant selection for publication is managed in `helm/lm-serve-publisher/values.yaml` via `consumer.catalogs[*].tenant` and `enabled`.
+- Tenant selection for publication is managed in `publisher/helm/values.yaml` via `consumer.catalogs[*].tenant` and `enabled`.
 
 ## Cloud Portability
 
@@ -207,9 +206,18 @@ To move clouds, update:
 
 ## Related Docs
 
-- `deploy/README-install.md`
-- `deploy/README-inference-usage.md`
+- `README.install.md`
+- `README.inference-usage.md`
 - `README.multiple-tenants.md`
-- `helm/lm-serve-models/README.md`
-- `helm/lm-serve-publisher/README.md`
-- `helm/lm-serve-auth/README.md`
+- `models/README.md`
+- `models/helm/README.md`
+- `models/image/README.md`
+- `publisher/README.md`
+- `publisher/helm/README.md`
+- `publisher/image/README.md`
+- `auth/README.md`
+- `auth/helm/README.md`
+- `auth/image/README.md`
+- `platform/README.md`
+- `platform/helm/README.md`
+- `platform/image/README.md`

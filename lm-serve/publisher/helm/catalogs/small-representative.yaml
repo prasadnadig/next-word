@@ -1,0 +1,29 @@
+# small-representative tenant catalog selection
+#
+# Model selection rationale:
+# - smollm2-135m-instruct (HuggingFaceTB/SmolLM2-135M-Instruct):
+#   - ~135M parameter instruction-tuned model from Hugging Face.
+#   - Apache-2.0 license and good lightweight default for endpoint smoke tests.
+# - gemma-3-270m-it (google/gemma-3-270m-it):
+#   - ~270M parameter instruction-tuned model from Google DeepMind.
+#   - Useful second fixture with different tokenizer/model behavior.
+#
+# Caveats:
+# - gemma-3-270m-it is gated; ensure HF_TOKEN has access and terms acceptance.
+# - These models are more representative than tiny-gpt2/random-gpt2 but still
+#   small relative to many production models.
+# - Consider a third, larger model profile for throughput and memory realism.
+#
+# This file only selects models by `name` from the global catalog
+# (models.yaml); source/storage/serving config lives there. `enabled` here is
+# this tenant's local on/off switch; the model must also be enabled in the
+# global catalog to actually publish. Use `servingOverrides` to deep-merge
+# tenant-specific serving fields on top of the global `serving` block (e.g. a
+# different `replicas` or `pvcSize` for this tenant only).
+
+models:
+  - name: smollm2-135m-instruct
+    enabled: true
+  - name: gemma-3-270m-it
+    enabled: true
+

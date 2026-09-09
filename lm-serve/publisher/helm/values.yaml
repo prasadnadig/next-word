@@ -1,0 +1,72 @@
+publisher:
+  # Enable publisher runtime objects in this chart.
+  # true  => CronJob and related publisher workflow are active.
+  # false => chart can still hold catalog definitions but does not publish artifacts.
+  enabled: true
+  name: lm-serve-model-publisher
+  image:
+    registry: localhost
+    repository: lm-serve-model-publisher
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  # Cron schedule controlling publish frequency.
+  # Faster schedules reduce staleness but increase object storage and API churn.
+  schedule: "0 */6 * * *"
+  serviceAccountName: lm-serve-model-publisher
+  # Global model catalog: single source of truth for every model (name, source,
+  # storage prefix, base serving config). Rendered from catalogs/models.yaml
+  # into its own ConfigMap, separate from the per-tenant selection ConfigMaps.
+  globalCatalogFile: models.yaml
+  globalCatalogConfigMapName: lm-serve-model-catalog-global
+  globalCatalogKey: models.yaml
+  catalogKey: models.yaml
+  catalogConfigMapPrefix: lm-serve-model-catalog
+  publishedCatalogsPrefix: published-catalogs
+  publishedCatalogKey: models.yaml
+  sharedArtifactsPrefix: _shared
+  storage:
+    # Explicit object storage destination for publisher runtime.
+    # This is injected into CronJob args and is not embedded in source catalogs.
+    bucket: my-shared-llm-model-bucket
+    endpoint: REPLACE_ME_STORAGE_ENDPOINT
+    region: REPLACE_ME_STORAGE_REGION
+  credentials:
+    s3SecretNameA: lm-serve-publisher-object-storage-creds-a
+    s3SecretNameB: lm-serve-publisher-object-storage-creds-b
+    hfSecretName: lm-serve-publisher-hf-credentials
+  # Source identities (TYPE:REPO@REVISION, e.g. "huggingface:org/repo@v1") to force
+  # redownload/republish even if already published. This matches the model's
+  # source identity rather than its (now globally unique) catalog `name`, so it
+  # keeps working even if a model is renamed in the global catalog.
+  # Empty by default; add entries temporarily, then clear once no longer needed.
+  forceRedownload: []
+
+consumer:
+  # Enable consumer-facing catalog artifacts from this chart.
+  # If false, publisher still runs but this chart will not prepare catalog ConfigMaps.
+  enabled: true
+  catalogs:
+    # Each catalog entry is independently toggleable.
+    # enabled=true  => include catalog ConfigMap wiring for that tenant.
+    # enabled=false => exclude that tenant from publisher runs.
+    # Use this to roll out one tenant at a time.
+    - tenant: sample-env
+      enabled: false
+      file: sample-env.yaml
+    - tenant: small-representative
+      enabled: false
+      file: small-representative.yaml
+    - tenant: tiny-smoke
+      enabled: true
+      file: tiny-smoke.yaml
+
+# Multi-option examples:
+# 1) Enable only one consumer catalog during phased rollout
+# consumer:
+#   catalogs:
+#     - tenant: sample-env
+#       enabled: true
+#       file: sample-env.yaml
+#     - tenant: small-representative
+#       enabled: false
+#       file: small-representative.yaml

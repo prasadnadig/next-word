@@ -1,0 +1,34 @@
+# Consumer-side tenant profile for the model-runtime chart.
+# The source-of-truth model catalog is owned by the publisher chart under
+# `publisher/helm/catalogs/*.yaml`; this file configures the consumer runtime.
+
+catalog:
+  tenant: sample-env
+
+objectStorage:
+  # Explicit reconciler object storage config (not embedded in catalog payload).
+  bucket: my-sample-env-llm-model-bucket
+  endpoint: https://us-ord-1.linodeobjects.com
+  region: us-east-1
+
+modelReconciler:
+  # true  => chart runs in-cluster reconciliation Job.
+  # false => skip Job and rely on deploy script or external controller.
+  enabled: true
+  image: registry.example.com/vllm-catalog-deployer:0.1.0
+  args:
+    # Exposure mode for reconciler-created model services.
+    # ClusterIP keeps model endpoints internal.
+    # NodePort or LoadBalancer enables external reachability.
+    modelServiceType: LoadBalancer
+    # Reconciliation cadence in watch mode.
+    # Short interval gives faster rollout reaction but more cluster API traffic.
+    watchIntervalSec: "60"
+
+  # Alternative reconciliation mode examples:
+  # enabled: false
+
+  # Alternative model service exposure examples:
+  # args:
+  #   modelServiceType: ClusterIP
+  #   watchIntervalSec: "120"

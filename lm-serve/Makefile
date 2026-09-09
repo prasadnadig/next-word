@@ -9,33 +9,51 @@ MODEL_SERVICE_TYPE ?= LoadBalancer
 AUTH_NAMESPACE ?= $(if $(TENANT),$(TENANT),$(NAMESPACE))
 
 # Configure optional image overrides for in-cluster model reconciliation and publishing.
-AUTH_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-auth-service:0.1.0
-MODEL_RECONCILER_IMAGE ?= REPLACE_ME_REGISTRY/vllm-catalog-deployer:0.1.0
+# Each image is split into REGISTRY/REPOSITORY/TAG (mirroring the Helm charts' image.* fields).
+# LM_SERVE_IMAGE_REGISTRY defaults to "localhost" so an unspecified registry resolves to the
+# local node's image cache, matching the same convention used by values.yaml in each Helm chart.
+LM_SERVE_IMAGE_REGISTRY ?= localhost
+
+AUTH_IMAGE_REGISTRY ?= $(LM_SERVE_IMAGE_REGISTRY)
+AUTH_IMAGE_REPOSITORY ?= lm-serve-auth-service
+AUTH_IMAGE_TAG ?= 0.1.0
+AUTH_IMAGE ?= $(if $(AUTH_IMAGE_REGISTRY),$(AUTH_IMAGE_REGISTRY)/,)$(AUTH_IMAGE_REPOSITORY):$(AUTH_IMAGE_TAG)
+
+MODEL_RECONCILER_IMAGE_REGISTRY ?= $(LM_SERVE_IMAGE_REGISTRY)
+MODEL_RECONCILER_IMAGE_REPOSITORY ?= vllm-catalog-deployer
+MODEL_RECONCILER_IMAGE_TAG ?= 0.1.0
+MODEL_RECONCILER_IMAGE ?= $(if $(MODEL_RECONCILER_IMAGE_REGISTRY),$(MODEL_RECONCILER_IMAGE_REGISTRY)/,)$(MODEL_RECONCILER_IMAGE_REPOSITORY):$(MODEL_RECONCILER_IMAGE_TAG)
 MODEL_RECONCILER_JOB_NAME ?= vllm-catalog-model-reconciler
 MODEL_RECONCILER_WATCH_INTERVAL_SEC ?= 60
-PUBLISHER_IMAGE ?= REPLACE_ME_REGISTRY/lm-serve-model-publisher:0.1.0
-ROUTE_AGGREGATOR_IMAGE_REPOSITORY ?= REPLACE_ME_REGISTRY/lm-serve-route-aggregator
+
+PUBLISHER_IMAGE_REGISTRY ?= $(LM_SERVE_IMAGE_REGISTRY)
+PUBLISHER_IMAGE_REPOSITORY ?= lm-serve-model-publisher
+PUBLISHER_IMAGE_TAG ?= 0.1.0
+PUBLISHER_IMAGE ?= $(if $(PUBLISHER_IMAGE_REGISTRY),$(PUBLISHER_IMAGE_REGISTRY)/,)$(PUBLISHER_IMAGE_REPOSITORY):$(PUBLISHER_IMAGE_TAG)
+
+ROUTE_AGGREGATOR_IMAGE_REGISTRY ?= $(LM_SERVE_IMAGE_REGISTRY)
+ROUTE_AGGREGATOR_IMAGE_REPOSITORY ?= lm-serve-route-aggregator
 ROUTE_AGGREGATOR_IMAGE_TAG ?= 0.1.0
-ROUTE_AGGREGATOR_IMAGE ?= $(ROUTE_AGGREGATOR_IMAGE_REPOSITORY):$(ROUTE_AGGREGATOR_IMAGE_TAG)
+ROUTE_AGGREGATOR_IMAGE ?= $(if $(ROUTE_AGGREGATOR_IMAGE_REGISTRY),$(ROUTE_AGGREGATOR_IMAGE_REGISTRY)/,)$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY):$(ROUTE_AGGREGATOR_IMAGE_TAG)
 
 # Configure Helm chart wiring and layered values model.
 AUTH_HELM_RELEASE ?= lm-serve-auth
-AUTH_HELM_CHART ?= helm/lm-serve-auth
+AUTH_HELM_CHART ?= auth/helm
 AUTH_HELM_VALUES_BASE ?= -f $(AUTH_HELM_CHART)/values.yaml
 AUTH_HELM_VALUES ?= $(AUTH_HELM_VALUES_BASE)
 
 PLATFORM_HELM_RELEASE ?= lm-serve-platform
-PLATFORM_HELM_CHART ?= helm/lm-serve-platform
+PLATFORM_HELM_CHART ?= platform/helm
 PLATFORM_HELM_VALUES ?= -f $(PLATFORM_HELM_CHART)/values.yaml
 
 MODELS_HELM_RELEASE ?= lm-serve-models
-MODELS_HELM_CHART ?= helm/lm-serve-models
+MODELS_HELM_CHART ?= models/helm
 MODELS_HELM_VALUES_BASE ?= -f $(MODELS_HELM_CHART)/values.yaml
 MODELS_HELM_VALUES_ENV ?= -f $(MODELS_HELM_CHART)/values.$(TENANT).yaml
 MODELS_HELM_VALUES ?= $(MODELS_HELM_VALUES_BASE) $(if $(TENANT),$(MODELS_HELM_VALUES_ENV),)
 
 PUBLISHER_HELM_RELEASE ?= lm-serve-publisher
-PUBLISHER_HELM_CHART ?= helm/lm-serve-publisher
+PUBLISHER_HELM_CHART ?= publisher/helm
 PUBLISHER_HELM_VALUES ?= -f $(PUBLISHER_HELM_CHART)/values.yaml
 
 TENANT ?=
@@ -92,7 +110,7 @@ help:
 	@echo "    done: push auth service image to the specified container registry"
 	@echo "  make apply-auth-service"
 	@echo "    done: deploy or update auth chart with the selected auth image"
-	@echo "  make apply-model-reconciler TENANT=<tenant> MODEL_RECONCILER_IMAGE=<img>"
+	@echo "  make apply-model-reconciler TENANT=<tenant> MODEL_RECONCILER_IMAGE_REPOSITORY=<repo> MODEL_RECONCILER_IMAGE_TAG=<tag>"
 	@echo "    done: enable in-cluster model reconciliation and configure Job/image/args for the reconciler"
 	@echo "  make build-route-aggregator-image"
 	@echo "    done: build standalone lm-serve-platform route-aggregator controller image"
@@ -104,7 +122,7 @@ help:
 	@echo "    done: build model catalog publisher image"
 	@echo "  make push-model-publisher-image"
 	@echo "    done: push model catalog publisher image to the specified container registry"
-	@echo "  make apply-model-publisher PUBLISHER_IMAGE=<img>"
+	@echo "  make apply-model-publisher PUBLISHER_IMAGE_REPOSITORY=<repo> PUBLISHER_IMAGE_TAG=<tag>"
 	@echo "    done: install the publisher chart in its dedicated namespace; TENANT is not required because the catalog registry is defined in values.yaml"
 	@echo ""
 	@echo "Diagnostics and prerequisites:"
@@ -122,14 +140,16 @@ help:
 	@echo "    done: select Kubernetes namespace and model catalog location"
 	@echo "  AUTH_NAMESPACE=$(AUTH_NAMESPACE)"
 	@echo "    done: select where auth chart is deployed; default follows TENANT when set, otherwise NAMESPACE"
-	@echo "  AUTH_IMAGE=$(AUTH_IMAGE) MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE)"
-	@echo "    done: set runtime images for auth service, model reconciliation, and model publishing automation"
+	@echo "  LM_SERVE_IMAGE_REGISTRY=$(LM_SERVE_IMAGE_REGISTRY)"
+	@echo "    done: set the shared default registry used by {AUTH,MODEL_RECONCILER,PUBLISHER,ROUTE_AGGREGATOR}_IMAGE_REGISTRY when they are not overridden individually; leaving this at localhost assumes images are only in the local node's image cache"
+	@echo "  {AUTH,MODEL_RECONCILER,PUBLISHER,ROUTE_AGGREGATOR}_IMAGE_REGISTRY (each defaults to LM_SERVE_IMAGE_REGISTRY)"
+	@echo "    done: select the registry for an individual image, overriding LM_SERVE_IMAGE_REGISTRY for just that image"
+	@echo "  {AUTH,MODEL_RECONCILER,PUBLISHER,ROUTE_AGGREGATOR}_IMAGE_REPOSITORY and _IMAGE_TAG"
+	@echo "    done: set the repository and tag for each image independently; combine with REGISTRY into a full <registry>/<repository>:<tag> image reference"
+	@echo "  AUTH_IMAGE=$(AUTH_IMAGE) MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE) ROUTE_AGGREGATOR_IMAGE=$(ROUTE_AGGREGATOR_IMAGE)"
+	@echo "    done: override a full image reference directly instead of its REGISTRY/REPOSITORY/TAG parts"
 	@echo "  MODEL_RECONCILER_JOB_NAME=$(MODEL_RECONCILER_JOB_NAME) MODEL_RECONCILER_WATCH_INTERVAL_SEC=$(MODEL_RECONCILER_WATCH_INTERVAL_SEC)"
 	@echo "    done: override in-cluster reconciler Job name and watch interval seconds"
-	@echo "  ROUTE_AGGREGATOR_IMAGE=$(ROUTE_AGGREGATOR_IMAGE)"
-	@echo "    done: set standalone platform route-aggregator image (build/push/apply-route-aggregator)"
-	@echo "  ROUTE_AGGREGATOR_IMAGE_REPOSITORY=$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY) ROUTE_AGGREGATOR_IMAGE_TAG=$(ROUTE_AGGREGATOR_IMAGE_TAG)"
-	@echo "    done: optionally set route-aggregator image repository and tag independently"
 	@echo "  TENANT=<tenant-name> (optional; example: TENANT=sample-env)"
 	@echo "    done: include values.<tenant>.yaml overlays for models when needed"
 	@echo "  AUTH_HELM_RELEASE=$(AUTH_HELM_RELEASE) PLATFORM_HELM_RELEASE=$(PLATFORM_HELM_RELEASE) MODELS_HELM_RELEASE=$(MODELS_HELM_RELEASE) PUBLISHER_HELM_RELEASE=$(PUBLISHER_HELM_RELEASE)"
@@ -220,21 +240,21 @@ confirm-target-cluster: check-kubectl
 # Step 1: Bootstrap base chart resources and namespace secrets.
 .PHONY: render-helm-template
 render-helm-template: check-helm
-	helm template $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
+	helm template $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) $(AUTH_HELM_VALUES) --set-string authService.image.registry=$(AUTH_IMAGE_REGISTRY) --set-string authService.image.repository=$(AUTH_IMAGE_REPOSITORY) --set-string authService.image.tag=$(AUTH_IMAGE_TAG) $(HELM_EXTRA_ARGS)
 	helm template $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) $(PLATFORM_HELM_VALUES) --set authz.endpoint.namespace=$(AUTH_NAMESPACE) $(HELM_EXTRA_ARGS)
 	helm template $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) $(MODELS_HELM_VALUES) $(HELM_EXTRA_ARGS)
 	helm template $(PUBLISHER_HELM_RELEASE) $(PUBLISHER_HELM_CHART) -n $(NAMESPACE) $(PUBLISHER_HELM_VALUES) $(HELM_EXTRA_ARGS)
 
 .PHONY: helm-upgrade-base
 helm-upgrade-base: confirm-target-cluster check-helm check-kubectl require-tenant-models
-	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
+	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image.registry=$(AUTH_IMAGE_REGISTRY) --set-string authService.image.repository=$(AUTH_IMAGE_REPOSITORY) --set-string authService.image.tag=$(AUTH_IMAGE_TAG) $(HELM_EXTRA_ARGS)
 	helm upgrade --install $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PLATFORM_HELM_VALUES) --set authz.endpoint.namespace=$(AUTH_NAMESPACE) $(HELM_EXTRA_ARGS)
 	helm upgrade --install $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) --create-namespace $(MODELS_HELM_VALUES) --set modelReconciler.enabled=false $(HELM_EXTRA_ARGS)
 
 .PHONY: apply-base
 
 apply-base: confirm-target-cluster
-	@$(MAKE) helm-upgrade-base FORCE=true TENANT="$(TENANT)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" AUTH_IMAGE="$(AUTH_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) helm-upgrade-base FORCE=true TENANT="$(TENANT)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" AUTH_IMAGE_REGISTRY="$(AUTH_IMAGE_REGISTRY)" AUTH_IMAGE_REPOSITORY="$(AUTH_IMAGE_REPOSITORY)" AUTH_IMAGE_TAG="$(AUTH_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	kubectl -n $(NAMESPACE) apply -f manifests/secrets.examples.yaml
 	@if [[ "$(AUTH_NAMESPACE)" != "$(NAMESPACE)" ]]; then \
 		kubectl -n $(AUTH_NAMESPACE) apply -f manifests/secrets.examples.yaml; \
@@ -271,12 +291,12 @@ deploy-watch-local: check-kubectl check-helm require-tenant-models
 # Step 3: Generate test credentials and validate serving with smoke tests.
 .PHONY: generate-auth-materials
 generate-auth-materials:
-	bash deploy/generate_test_auth_materials.sh --team-size 3 --jwt-sub dev-user --jwt-ttl-sec 3600
+	bash auth/image/generate_test_auth_materials.sh --team-size 3 --jwt-sub dev-user --jwt-ttl-sec 3600
 
 .PHONY: smoke-test-api-key
 smoke-test-api-key: check-kubectl check-yq
 	@if [[ -z "$(API_KEY)" ]]; then echo "Set API_KEY variable"; exit 1; fi
-	bash deploy/smoke_test_lm_serve_catalog.sh \
+	bash platform/image/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
 	  --route-configmap $(ROUTE_CONFIGMAP) \
 	  --route-key $(ROUTE_KEY) \
@@ -286,7 +306,7 @@ smoke-test-api-key: check-kubectl check-yq
 .PHONY: smoke-test-jwt
 smoke-test-jwt: check-kubectl check-yq
 	@if [[ -z "$(JWT_TOKEN)" ]]; then echo "Set JWT_TOKEN variable"; exit 1; fi
-	bash deploy/smoke_test_lm_serve_catalog.sh \
+	bash platform/image/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
 	  --route-configmap $(ROUTE_CONFIGMAP) \
 	  --route-key $(ROUTE_KEY) \
@@ -298,7 +318,7 @@ smoke-test-jwt: check-kubectl check-yq
 smoke-test-all: check-kubectl check-yq
 	@if [[ -z "$(API_KEY)" ]]; then echo "Set API_KEY variable"; exit 1; fi
 	@if [[ -z "$(JWT_TOKEN)" ]]; then echo "Set JWT_TOKEN variable"; exit 1; fi
-	bash deploy/smoke_test_lm_serve_catalog.sh \
+	bash platform/image/smoke_test_lm_serve_catalog.sh \
 	  --namespace $(NAMESPACE) \
 	  --route-configmap $(ROUTE_CONFIGMAP) \
 	  --route-key $(ROUTE_KEY) \
@@ -309,7 +329,7 @@ smoke-test-all: check-kubectl check-yq
 # Optional extension: Automate in-cluster model reconciliation.
 .PHONY: build-auth-image
 build-auth-image: check-docker
-	docker build -t $(AUTH_IMAGE) auth-service
+	docker build -t $(AUTH_IMAGE) auth/image
 
 .PHONY: push-auth-image
 push-auth-image: check-docker
@@ -317,11 +337,11 @@ push-auth-image: check-docker
 
 .PHONY: apply-auth-service
 apply-auth-service: confirm-target-cluster check-helm check-kubectl
-	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image=$(AUTH_IMAGE) $(HELM_EXTRA_ARGS)
+	helm upgrade --install $(AUTH_HELM_RELEASE) $(AUTH_HELM_CHART) -n $(AUTH_NAMESPACE) --create-namespace $(AUTH_HELM_VALUES) --set-string authService.image.registry=$(AUTH_IMAGE_REGISTRY) --set-string authService.image.repository=$(AUTH_IMAGE_REPOSITORY) --set-string authService.image.tag=$(AUTH_IMAGE_TAG) $(HELM_EXTRA_ARGS)
 
 .PHONY: build-route-aggregator-image
 build-route-aggregator-image: check-docker
-	docker build -t $(ROUTE_AGGREGATOR_IMAGE) route-aggregator
+	docker build -t $(ROUTE_AGGREGATOR_IMAGE) platform/image
 
 .PHONY: push-route-aggregator-image
 push-route-aggregator-image: check-docker
@@ -332,6 +352,7 @@ apply-route-aggregator: confirm-target-cluster check-helm check-kubectl
 	helm upgrade --install $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PLATFORM_HELM_VALUES) \
 	  --set authz.endpoint.namespace=$(AUTH_NAMESPACE) \
 	  --set routeConfig.liveUpdate.enabled=true \
+	  --set-string routeConfig.liveUpdate.controller.image.registry=$(ROUTE_AGGREGATOR_IMAGE_REGISTRY) \
 	  --set-string routeConfig.liveUpdate.controller.image.repository=$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY) \
 	  --set-string routeConfig.liveUpdate.controller.image.tag=$(ROUTE_AGGREGATOR_IMAGE_TAG) \
 	  $(HELM_EXTRA_ARGS)
@@ -339,7 +360,7 @@ apply-route-aggregator: confirm-target-cluster check-helm check-kubectl
 # Optional extension: Automate in-cluster model reconciliation.
 .PHONY: build-model-reconciler-image
 build-model-reconciler-image: check-docker
-	docker build -t $(MODEL_RECONCILER_IMAGE) deploy
+	docker build -t $(MODEL_RECONCILER_IMAGE) models/image
 
 .PHONY: push-model-reconciler-image
 push-model-reconciler-image: check-docker
@@ -351,7 +372,9 @@ apply-model-reconciler: confirm-target-cluster check-helm check-kubectl require-
 	helm upgrade --install $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) --create-namespace $(MODELS_HELM_VALUES) \
 	  --set modelReconciler.enabled=true \
 	  --set-string modelReconciler.name=$(MODEL_RECONCILER_JOB_NAME) \
-	  --set-string modelReconciler.image=$(MODEL_RECONCILER_IMAGE) \
+	  --set-string modelReconciler.image.registry=$(MODEL_RECONCILER_IMAGE_REGISTRY) \
+	  --set-string modelReconciler.image.repository=$(MODEL_RECONCILER_IMAGE_REPOSITORY) \
+	  --set-string modelReconciler.image.tag=$(MODEL_RECONCILER_IMAGE_TAG) \
 	  --set-string catalog.tenant=$(TENANT) \
 	  --set-string modelReconciler.args.catalogKey=$(CATALOG_KEY) \
 	  --set-string modelReconciler.args.modelServiceType=$(MODEL_SERVICE_TYPE) \
@@ -360,7 +383,7 @@ apply-model-reconciler: confirm-target-cluster check-helm check-kubectl require-
 # Optional extension: Automate model publishing.
 .PHONY: build-model-publisher-image
 build-model-publisher-image: check-docker
-	docker build -t $(PUBLISHER_IMAGE) publisher
+	docker build -t $(PUBLISHER_IMAGE) publisher/image
 
 .PHONY: push-model-publisher-image
 push-model-publisher-image: check-docker
@@ -370,7 +393,9 @@ push-model-publisher-image: check-docker
 apply-model-publisher: confirm-target-cluster check-helm check-kubectl
 	helm upgrade --install $(PUBLISHER_HELM_RELEASE) $(PUBLISHER_HELM_CHART) -n $(NAMESPACE) --create-namespace $(PUBLISHER_HELM_VALUES) \
 	  --set publisher.enabled=true --set consumer.enabled=true \
-	  --set-string publisher.image=$(PUBLISHER_IMAGE) $(HELM_EXTRA_ARGS)
+	  --set-string publisher.image.registry=$(PUBLISHER_IMAGE_REGISTRY) \
+	  --set-string publisher.image.repository=$(PUBLISHER_IMAGE_REPOSITORY) \
+	  --set-string publisher.image.tag=$(PUBLISHER_IMAGE_TAG) $(HELM_EXTRA_ARGS)
 
 # High-level orchestration targets.
 .PHONY: happy-build
@@ -405,16 +430,16 @@ happy-apply: confirm-target-cluster
 	@if [[ -z "$(TENANT)" ]]; then echo "Set TENANT=<tenant-name> (example: TENANT=sample-env)"; exit 1; fi
 	@echo "[1/5] Installing auth, platform, and models baseline charts."
 	@echo "      Why: creates foundational software and required namespace-scoped resources first."
-	@$(MAKE) apply-base FORCE=true TENANT="$(TENANT)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" AUTH_IMAGE="$(AUTH_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) apply-base FORCE=true TENANT="$(TENANT)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" AUTH_IMAGE_REGISTRY="$(AUTH_IMAGE_REGISTRY)" AUTH_IMAGE_REPOSITORY="$(AUTH_IMAGE_REPOSITORY)" AUTH_IMAGE_TAG="$(AUTH_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[2/5] Enabling platform live route update controller."
 	@echo "      Why: route aggregation must be available before ongoing model route changes."
-	@$(MAKE) apply-route-aggregator FORCE=true TENANT="$(TENANT)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) apply-route-aggregator FORCE=true TENANT="$(TENANT)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" ROUTE_AGGREGATOR_IMAGE_REGISTRY="$(ROUTE_AGGREGATOR_IMAGE_REGISTRY)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[3/5] Enabling in-cluster model reconciler job."
 	@echo "      Why: cluster-local reconciliation keeps model runtimes aligned with catalog changes."
-	@$(MAKE) apply-model-reconciler FORCE=true TENANT="$(TENANT)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) apply-model-reconciler FORCE=true TENANT="$(TENANT)" MODEL_RECONCILER_IMAGE_REGISTRY="$(MODEL_RECONCILER_IMAGE_REGISTRY)" MODEL_RECONCILER_IMAGE_REPOSITORY="$(MODEL_RECONCILER_IMAGE_REPOSITORY)" MODEL_RECONCILER_IMAGE_TAG="$(MODEL_RECONCILER_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[4/5] Running one immediate reconciliation pass from local workstation."
 	@echo "      Why: bootstraps model workloads immediately by running the in-cluster reconciler image in one-shot mode."
-	@$(MAKE) apply-serve-model FORCE=true TENANT="$(TENANT)" NAMESPACE="$(NAMESPACE)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" MODEL_RECONCILER_JOB_NAME="$(MODEL_RECONCILER_JOB_NAME)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) apply-serve-model FORCE=true TENANT="$(TENANT)" NAMESPACE="$(NAMESPACE)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" MODEL_RECONCILER_IMAGE_REGISTRY="$(MODEL_RECONCILER_IMAGE_REGISTRY)" MODEL_RECONCILER_IMAGE_REPOSITORY="$(MODEL_RECONCILER_IMAGE_REPOSITORY)" MODEL_RECONCILER_IMAGE_TAG="$(MODEL_RECONCILER_IMAGE_TAG)" MODEL_RECONCILER_JOB_NAME="$(MODEL_RECONCILER_JOB_NAME)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "[5/5] Running smoke test against enabled models through the edge endpoint."
 	@echo "      Why: validates auth path plus basic inference availability after deployment."
 	@if [[ -n "$(API_KEY)" && -n "$(JWT_TOKEN)" ]]; then \
@@ -434,5 +459,5 @@ happy-release: confirm-target-cluster
 	@echo "[2/3] Publishing container images."
 	@$(MAKE) happy-publish AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE="$(ROUTE_AGGREGATOR_IMAGE)" PUBLISHER_IMAGE="$(PUBLISHER_IMAGE)" PUBLISH_IF_MISSING="$(PUBLISH_IF_MISSING)"
 	@echo "[3/3] Applying release to target cluster."
-	@$(MAKE) happy-apply FORCE=true TENANT="$(TENANT)" API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" AUTH_IMAGE="$(AUTH_IMAGE)" MODEL_RECONCILER_IMAGE="$(MODEL_RECONCILER_IMAGE)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
+	@$(MAKE) happy-apply FORCE=true TENANT="$(TENANT)" API_KEY="$(API_KEY)" JWT_TOKEN="$(JWT_TOKEN)" PROMPT="$(PROMPT)" NAMESPACE="$(NAMESPACE)" AUTH_NAMESPACE="$(AUTH_NAMESPACE)" CATALOG_KEY="$(CATALOG_KEY)" MODEL_SERVICE_TYPE="$(MODEL_SERVICE_TYPE)" AUTH_IMAGE_REGISTRY="$(AUTH_IMAGE_REGISTRY)" AUTH_IMAGE_REPOSITORY="$(AUTH_IMAGE_REPOSITORY)" AUTH_IMAGE_TAG="$(AUTH_IMAGE_TAG)" MODEL_RECONCILER_IMAGE_REGISTRY="$(MODEL_RECONCILER_IMAGE_REGISTRY)" MODEL_RECONCILER_IMAGE_REPOSITORY="$(MODEL_RECONCILER_IMAGE_REPOSITORY)" MODEL_RECONCILER_IMAGE_TAG="$(MODEL_RECONCILER_IMAGE_TAG)" ROUTE_AGGREGATOR_IMAGE_REGISTRY="$(ROUTE_AGGREGATOR_IMAGE_REGISTRY)" ROUTE_AGGREGATOR_IMAGE_REPOSITORY="$(ROUTE_AGGREGATOR_IMAGE_REPOSITORY)" ROUTE_AGGREGATOR_IMAGE_TAG="$(ROUTE_AGGREGATOR_IMAGE_TAG)" HELM_EXTRA_ARGS="$(HELM_EXTRA_ARGS)"
 	@echo "Happy release complete."

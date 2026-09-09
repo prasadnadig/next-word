@@ -1,0 +1,59 @@
+# small-representative tenant profile
+#
+# Purpose:
+# - Consumer-side deployment profile for the model-runtime chart.
+# - The source-of-truth model catalog is owned by the publisher under
+#   `publisher/helm/catalogs/*.yaml`.
+# - This file configures storage and runtime settings for the consuming tenant.
+#
+# The actual model list and serving definitions live in publisher-managed catalog
+# files instead of here.
+#
+# Historical note:
+# - Provide a lightweight but more production-representative test lane than the
+#   tiny-smoke profile, while still keeping model size relatively small.
+#
+# Why this fits:
+# - Paired with the publisher-managed small-representative catalog, this profile
+#   enables realistic model loading, chat/instruction formatting, and generation
+#   paths while staying lightweight.
+#
+# Caveats:
+# - gemma-3-270m-it requires Hugging Face login plus acceptance of Google's
+#   model license terms; pulls will fail until terms are accepted.
+# - These models are still much smaller than typical production LLMs; passing
+#   tests here does not guarantee capacity/performance for larger models.
+# - Keep this profile for API-path confidence; add a larger follow-up model when
+#   you need stronger performance and behavior representativeness.
+
+catalog:
+  tenant: small-representative
+
+objectStorage:
+  # Explicit reconciler object storage config (not embedded in catalog payload).
+  # Replace with tenant-specific object storage for this profile.
+  bucket: my-small-representative-llm-model-bucket
+  endpoint: https://us-ord-1.linodeobjects.com
+  region: us-east-1
+
+modelReconciler:
+  # true  => chart runs in-cluster reconciliation Job.
+  # false => skip Job and rely on deploy script or external controller.
+  enabled: true
+  image: registry.example.com/vllm-catalog-deployer:0.1.0
+  args:
+    # Exposure mode for reconciler-created model services.
+    # ClusterIP keeps model endpoints internal.
+    # NodePort or LoadBalancer enables external reachability.
+    modelServiceType: LoadBalancer
+    # Reconciliation cadence in watch mode.
+    # Short interval gives faster rollout reaction but more cluster API traffic.
+    watchIntervalSec: "60"
+
+  # Alternative reconciliation mode examples:
+  # enabled: false
+
+  # Alternative model service exposure examples:
+  # args:
+  #   modelServiceType: ClusterIP
+  #   watchIntervalSec: "120"

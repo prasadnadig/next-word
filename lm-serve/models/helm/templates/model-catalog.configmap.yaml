@@ -1,0 +1,20 @@
+{{- if .Values.catalog.enabled }}
+{{- $models := .Values.catalog.models | default (list) }}
+{{- $rejectEmptyCatalog := true }}
+{{- if hasKey .Values.validation "rejectEmptyCatalog" }}
+{{- $rejectEmptyCatalog = .Values.validation.rejectEmptyCatalog }}
+{{- end }}
+{{- if and $rejectEmptyCatalog (eq (len $models) 0) }}
+{{- fail "catalog.models must be non-empty when validation.rejectEmptyCatalog=true" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.catalog.name }}
+  labels:
+{{ include "lm-serve-models.labels" . | indent 4 }}
+data:
+  {{ .Values.catalog.key }}: |
+    models:
+{{ toYaml .Values.catalog.models | nindent 6 }}
+{{- end }}

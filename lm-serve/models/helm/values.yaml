@@ -1,0 +1,97 @@
+catalog:
+  # Legacy ConfigMap generation mode.
+  # This is disabled by default because reconciler now pulls catalog from object storage.
+  enabled: false
+  name: lm-serve-model-catalog
+  key: models.yaml
+  # Tenant key used in publisher output path:
+  # s3://<bucket>/<publishedPrefix>/<tenant>/<key>
+  tenant: sample-env
+  publishedPrefix: published-catalogs
+  # Optional inline model list for manual workflows.
+  # In most deployments, publisher chart owns model intent and this remains empty.
+  models: []
+
+objectStorage:
+  # Explicit object storage configuration for reconciler runtime.
+  # Reconciler uses these values for both tenant catalog fetch and model artifact sync.
+  # Fetched catalog payloads are model-only and do not embed object storage coordinates.
+  bucket: REPLACE_ME_BUCKET
+  endpoint: https://us-ord-1.linodeobjects.com
+  region: us-east-1
+
+validation:
+  # Catalog validation mode:
+  # false => allow empty catalog (useful for bootstrap before first publish).
+  # true  => fail route generation when no models are enabled.
+  rejectEmptyCatalog: false
+
+modelReconciler:
+  # Reconciler execution mode:
+  # true  => run in-cluster Job to reconcile model catalog into runtime resources.
+  # false => do not run Job; use deploy script or external controller instead.
+  enabled: true
+  name: vllm-catalog-model-reconciler
+  serviceAccountName: vllm-catalog-model-reconciler
+  roleName: vllm-catalog-model-reconciler
+  backoffLimit: 0
+  image:
+    registry: localhost
+    repository: vllm-catalog-deployer
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  args:
+    catalogKey: models.yaml
+    # Service exposure for model services created by reconciler.
+    # - ClusterIP: internal-only traffic via cluster networking.
+    # - NodePort: expose via node IP and fixed port range.
+    # - LoadBalancer: cloud/load balancer exposure for external clients.
+    modelServiceType: LoadBalancer
+    routeConfigMapName: lm-serve-envoy-routes
+    routeConfigKey: routes.yaml
+    # Reconcile interval when running watch mode.
+    # Lower values detect catalog changes faster but increase API server churn.
+    watchIntervalSec: "60"
+
+  objectStoragePullSecrets:
+    # Reconciler-owned pull secrets for catalog object storage fetches.
+    # Keep both secrets present to support credential rotation without fixed active/standby roles.
+    enabled: true
+    secretNameA: lm-serve-object-storage-creds-a
+    secretNameB: lm-serve-object-storage-creds-b
+    # Reconciler skips processing when neither secret has values different from this placeholder.
+    placeholderValue: REPLACE_ME_SET_REAL_CREDENTIAL
+
+    # Service type examples:
+    # modelServiceType: ClusterIP
+    # modelServiceType: NodePort
+    # modelServiceType: LoadBalancer
+
+  # Reconciler mode examples:
+  # 1) In-cluster managed reconciliation
+  # enabled: true
+  # image: registry.example.com/vllm-catalog-deployer:0.1.0
+
+  # 2) External or manual reconciliation flow
+  # enabled: false
+
+routeConfig:
+  # Shared route ConfigMap contract read by platform Envoy chart.
+  configMapName: lm-serve-envoy-routes
+  key: routes.yaml
+  # Route URL prefix strategy is namespaced-only:
+  # /m/<tenant-segment>/<model>/
+  #
+  # Default tenant segment source:
+  # - Helm release namespace (sanitized to lowercase [a-z0-9-]).
+  #
+  # Optional namespace-to-alias mapping:
+  # - Use when you want a stable shorter alias independent of namespace naming.
+  # - Key: namespace name
+  # - Value: tenant segment alias used in route prefix
+  namespaceTenantSegmentMap: {}
+
+  # Example mappings:
+  # namespaceTenantSegmentMap:
+  #   lm-serve-dev-west: dev
+  #   lm-serve-staging-east: stg
