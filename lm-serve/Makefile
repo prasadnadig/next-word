@@ -1,4 +1,5 @@
-SHELL := /bin/bash
+MODULE_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+MODULE ?= $(notdir $(MODULE_ROOT))
 
 # Configure core deployment defaults.
 NAMESPACE ?= lm-serve
@@ -60,6 +61,9 @@ TENANT ?=
 HELM_EXTRA_ARGS ?=
 FORCE ?= false
 PUBLISH_IF_MISSING ?= false
+REQUIRED_TOOLS ?= kubectl yq docker skopeo helm
+
+include ../mk/common.mk
 
 # Configure auth and smoke-test inputs.
 API_KEY ?=
@@ -68,6 +72,8 @@ PROMPT ?= Reply with exactly the word OK.
 
 .PHONY: help
 help:
+	@$(MAKE) help-common
+	@echo ""
 	@echo "LM Serve Make Targets"
 	@echo ""
 	@echo "Primary flow (install split charts -> reconcile -> validate):"
@@ -146,8 +152,6 @@ help:
 	@echo "    done: select the registry for an individual image, overriding LM_SERVE_IMAGE_REGISTRY for just that image"
 	@echo "  {AUTH,MODEL_RECONCILER,PUBLISHER,ROUTE_AGGREGATOR}_IMAGE_REPOSITORY and _IMAGE_TAG"
 	@echo "    done: set the repository and tag for each image independently; combine with REGISTRY into a full <registry>/<repository>:<tag> image reference"
-	@echo "  AUTH_IMAGE=$(AUTH_IMAGE) MODEL_RECONCILER_IMAGE=$(MODEL_RECONCILER_IMAGE) PUBLISHER_IMAGE=$(PUBLISHER_IMAGE) ROUTE_AGGREGATOR_IMAGE=$(ROUTE_AGGREGATOR_IMAGE)"
-	@echo "    done: override a full image reference directly instead of its REGISTRY/REPOSITORY/TAG parts"
 	@echo "  MODEL_RECONCILER_JOB_NAME=$(MODEL_RECONCILER_JOB_NAME) MODEL_RECONCILER_WATCH_INTERVAL_SEC=$(MODEL_RECONCILER_WATCH_INTERVAL_SEC)"
 	@echo "    done: override in-cluster reconciler Job name and watch interval seconds"
 	@echo "  TENANT=<tenant-name> (optional; example: TENANT=sample-env)"
@@ -165,29 +169,6 @@ help:
 	@echo "  PUBLISH_IF_MISSING=$(PUBLISH_IF_MISSING)"
 	@echo "    done: when true, happy-publish skips pushing images that already exist in the registry"
 
-# Validate required local CLI tools.
-.PHONY: check-tools
-check-tools:
-	@$(MAKE) check-kubectl
-	@$(MAKE) check-yq
-	@$(MAKE) check-docker
-
-.PHONY: check-kubectl
-check-kubectl:
-	@command -v kubectl >/dev/null || (echo "kubectl not found" && exit 1)
-
-.PHONY: check-yq
-check-yq:
-	@command -v yq >/dev/null || (echo "yq not found" && exit 1)
-
-.PHONY: check-docker
-check-docker:
-	@command -v docker >/dev/null || (echo "docker not found" && exit 1)
-
-.PHONY: check-helm
-check-helm:
-	@command -v helm >/dev/null || (echo "helm not found" && exit 1)
-
 # Validate TENANT and layered Helm values files.
 .PHONY: require-tenant
 require-tenant:
@@ -199,42 +180,16 @@ require-tenant-models: require-tenant
 	@test -f "$(MODELS_HELM_CHART)/values.$(TENANT).yaml" || (echo "Missing $(MODELS_HELM_CHART)/values.$(TENANT).yaml" && exit 1)
 
 .PHONY: push-image-with-policy
-push-image-with-policy: check-docker
+push-image-with-policy: check-docker check-skopeo
 	@if [[ -z "$(IMAGE)" ]]; then echo "Set IMAGE=<repository:tag>"; exit 1; fi
 	@if [[ "$(PUBLISH_IF_MISSING)" =~ ^(1|true|yes|on)$$ ]]; then \
-		if docker manifest inspect "$(IMAGE)" >/dev/null 2>&1; then \
+		if skopeo inspect "docker://$(IMAGE)" >/dev/null 2>&1; then \
 			echo "Image already exists in registry, skipping push: $(IMAGE)"; \
 		else \
 			docker push "$(IMAGE)"; \
 		fi; \
 	else \
 		docker push "$(IMAGE)"; \
-	fi
-
-.PHONY: confirm-target-cluster
-confirm-target-cluster: check-kubectl
-	@context=$$(kubectl config current-context 2>/dev/null || echo "<unknown>"); \
-	cluster=$$(kubectl config view --minify -o 'jsonpath={.clusters[0].name}' 2>/dev/null || echo "<unknown>"); \
-	server=$$(kubectl config view --minify -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null || echo "<unknown>"); \
-	user=$$(kubectl config view --minify -o 'jsonpath={.users[0].name}' 2>/dev/null || echo "<unknown>"); \
-	default_namespace=$$(kubectl config view --minify -o 'jsonpath={..namespace}' 2>/dev/null || true); \
-	if [[ -z "$$default_namespace" ]]; then default_namespace=default; fi; \
-	echo "Target Kubernetes cluster:"; \
-	echo "  context: $$context"; \
-	echo "  cluster: $$cluster"; \
-	echo "  server: $$server"; \
-	echo "  user: $$user"; \
-	echo "  kubeconfig namespace: $$default_namespace"; \
-	echo "  target namespace: $(NAMESPACE)"; \
-	echo "  auth namespace: $(AUTH_NAMESPACE)"; \
-	if [[ "$(FORCE)" =~ ^(1|true|yes|on)$$ ]]; then \
-		echo "FORCE=true, bypassing confirmation."; \
-		exit 0; \
-	fi; \
-	read -r -p "Proceed against this cluster? [y/N] " confirm; \
-	if [[ ! "$$confirm" =~ ^[Yy]$$ ]]; then \
-		echo "Aborted."; \
-		exit 1; \
 	fi
 
 # Step 1: Bootstrap base chart resources and namespace secrets.
@@ -244,6 +199,9 @@ render-helm-template: check-helm
 	helm template $(PLATFORM_HELM_RELEASE) $(PLATFORM_HELM_CHART) -n $(NAMESPACE) $(PLATFORM_HELM_VALUES) --set authz.endpoint.namespace=$(AUTH_NAMESPACE) $(HELM_EXTRA_ARGS)
 	helm template $(MODELS_HELM_RELEASE) $(MODELS_HELM_CHART) -n $(NAMESPACE) $(MODELS_HELM_VALUES) $(HELM_EXTRA_ARGS)
 	helm template $(PUBLISHER_HELM_RELEASE) $(PUBLISHER_HELM_CHART) -n $(NAMESPACE) $(PUBLISHER_HELM_VALUES) $(HELM_EXTRA_ARGS)
+
+.PHONY: render
+render: render-helm-template
 
 .PHONY: helm-upgrade-base
 helm-upgrade-base: confirm-target-cluster check-helm check-kubectl require-tenant-models

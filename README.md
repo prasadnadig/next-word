@@ -14,6 +14,17 @@ Workspace for the LM Serve split-chart migration and related GPU bootstrap notes
 - [lm-serve/README.inference-usage.md](lm-serve/README.inference-usage.md) - consumer usage guide.
 - [lm-serve/README.chart-decomposition-proposal.md](lm-serve/README.chart-decomposition-proposal.md) - chart split proposal, ownership matrix, and auth mode decision matrix.
 
+## Makefile conventions
+
+The LM Serve workflow includes [mk/common.mk](mk/common.mk) for shared tool checks,
+cluster confirmation, derived defaults, and common help. Run `make help` from
+`lm-serve/` to see common and LM Serve-specific targets together. `MODULE` defaults
+to the module directory name; image/chart repositories, namespace, and the primary
+Helm release derive from that identity unless the module Makefile overrides them.
+The precedence order is command line, current shell environment, module Makefile,
+then shared include defaults. Multi-chart and multi-image components retain
+distinguishing suffixes for their additional artifacts.
+
 ## Configuration Modes Cheatsheet
 
 Use this as a quick decision map before picking values.
